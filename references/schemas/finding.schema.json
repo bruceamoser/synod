@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "council/finding.schema.json",
+  "title": "Council finding (member output)",
+  "type": "object",
+  "required": ["id", "round", "role", "topic", "stance", "argument", "evidence", "confidence"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^f-[0-9]{3,}$", "description": "Finding id, unique within the council run." },
+    "round": { "type": "integer", "minimum": 1 },
+    "role": { "type": "string", "minLength": 1, "description": "Role slug of the emitting member." },
+    "topic": { "type": "string", "minLength": 1, "description": "Topic id (t-NN) the finding bears on; 'problem-scoping' challenges the problem brief itself." },
+    "stance": { "enum": ["support", "refute"] },
+    "argument": { "type": "string", "minLength": 20, "description": "The position, stated plainly. Minimum length guards against empty shells." },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "claim", "quote_or_excerpt"],
+        "properties": {
+          "source": { "type": "string", "minLength": 1, "description": "url | file path | ledger-ref (e.g. f-002) | 'reasoning'" },
+          "claim": { "type": "string", "minLength": 1, "description": "What the source establishes." },
+          "quote_or_excerpt": { "type": "string", "minLength": 1, "description": "Verbatim excerpt supporting the claim (for 'reasoning': the worked computation)." }
+        },
+        "additionalProperties": false
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "rebutting": { "type": "array", "items": { "type": "string", "pattern": "^f-[0-9]{3,}$" }, "description": "Ids of findings this finding rebuts. The consensus engine uses this to decide whether a refute is un-rebutted; implicit disagreement does not rebut." }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "role": { "const": "researcher" } } },
+      "then": { "properties": { "evidence": { "minItems": 1 } } },
+      "description": "Researcher: no citation, no finding."
+    }
+  ],
+  "additionalProperties": false
+}

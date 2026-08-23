@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "council/event.schema.json",
+  "title": "Ledger event envelope (one per JSONL line)",
+  "type": "object",
+  "required": ["seq", "ts", "type", "payload", "provenance", "prev_hash"],
+  "properties": {
+    "seq": { "type": "integer", "minimum": 1, "description": "1-based, strictly increasing. The verifier rejects gaps and duplicates." },
+    "ts": { "type": "string", "format": "date-time" },
+    "type": { "enum": ["charter", "problem", "finding", "vote", "ruling", "digest", "recommendation", "close"] },
+    "payload": { "type": "object", "description": "Type-specific body: finding/ruling/recommendation payloads validate against their own schemas; 'problem' carries {statement, sources[]}; 'vote' carries {round, role, topic, stance}; 'charter' carries the locked charter." },
+    "provenance": {
+      "type": "object",
+      "required": ["role"],
+      "properties": {
+        "role": { "type": "string", "description": "Who produced this event ('engine' for deterministic events)." },
+        "model": { "type": ["string", "null"], "description": "Model id if an LLM produced it; null for engine events." }
+      },
+      "additionalProperties": false
+    },
+    "prev_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 of the previous event's canonical JSON (sorted keys, compact separators). Genesis event: 64 zeros. The verifier recomputes the chain; any rewrite breaks it (design law 3 made checkable)." }
+  },
+  "additionalProperties": false
+}

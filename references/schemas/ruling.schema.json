@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "council/ruling.schema.json",
+  "title": "Blind judge ruling",
+  "type": "object",
+  "required": ["id", "topic", "point_of_contention", "ruling", "reasoning", "conditions", "binding", "sealed_at"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^r-[0-9]{3,}$", "description": "Ruling id, unique within the council run. Engine-assigned on append." },
+    "topic": { "type": "string", "minLength": 1, "pattern": "^t-[0-9]{2,}$", "description": "The contested topic id this ruling resolves. Deterministic link for the consensus engine (ruled topics freeze)." },
+    "point_of_contention": { "type": "string", "minLength": 10, "description": "The specific contested point, restated as a question or proposition." },
+    "ruling": { "type": "string", "minLength": 10, "description": "The decision on that point, stated as a directive the council must work within." },
+    "reasoning": { "type": "string", "minLength": 10, "description": "Why, grounded in the arguments as presented (never in sources the judge cannot see)." },
+    "conditions": { "type": "array", "items": { "type": "string" }, "description": "Conditions attached to the ruling, if any." },
+    "binding": { "const": true, "description": "Rulings are immutable facts (design law 3). The engine rejects non-binding rulings." },
+    "sealed_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

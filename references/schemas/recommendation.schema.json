@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "council/recommendation.schema.json",
+  "title": "Final council recommendation (librarian synthesis)",
+  "type": "object",
+  "required": ["recommendation", "rationale", "resolved", "rulings_applied", "dissent", "confidence"],
+  "properties": {
+    "recommendation": { "type": "string", "minLength": 20, "description": "The final recommendation, decision-oriented." },
+    "rationale": { "type": "string", "minLength": 20, "description": "The reasoning chain, referencing topic ids." },
+    "resolved": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["topic", "outcome"],
+        "properties": {
+          "topic": { "type": "string", "minLength": 1 },
+          "outcome": { "type": "string", "minLength": 5 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "rulings_applied": { "type": "array", "items": { "type": "string", "pattern": "^r-[0-9]{3,}$" }, "description": "Every sealed ruling id in the ledger MUST appear here. The engine cross-checks." },
+    "dissent": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "topic", "position"],
+        "properties": {
+          "role": { "type": "string", "minLength": 1 },
+          "topic": { "type": "string", "minLength": 1 },
+          "position": { "type": "string", "minLength": 5 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+  },
+  "additionalProperties": false
+}
