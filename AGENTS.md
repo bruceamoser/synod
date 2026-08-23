@@ -11,7 +11,8 @@ The spec is `docs/ARCHITECTURE.md`. **It is normative.** Where this file and the
 ## Environment (this machine)
 
 - Python 3.11.15, system `python3`. Dependencies: **stdlib + PyYAML (6.0.3) + jsonschema (4.26.0)** only. Both are installed system-wide. **No venv, no pip installs, no other dependencies, ever.**
-- Run tests: `python3 -m unittest discover -s tests -v`
+- Run tests locally: `python3 -m unittest discover -s tests -v` (stdlib runner; pytest is a CI-only tool, not a repo dependency)
+- CI runs the same modules via `pytest tests/ -q` (uv) — the suite must be green under both runners
 - Compile check: `python3 -m py_compile scripts/council.py`
 - No network access is needed or wanted by the engine or the tests.
 
@@ -34,7 +35,7 @@ The spec is `docs/ARCHITECTURE.md`. **It is normative.** Where this file and the
 - File writes go through `atomic_write` (tmp + rename). Ledger appends hold `fcntl.flock`.
 - Canonical hashing: `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)` then SHA-256 hex. Genesis `prev_hash` is 64 zeros.
 - Schema changes require updating `references/schemas/` **and** the fixture tests in the same commit.
-- Tests: **stdlib `unittest` only** (no pytest). One module per concern under `tests/` (`test_ledger.py`, `test_consensus.py`, `test_wall.py`, `test_registry.py`, `test_scaffold.py`, `test_brief.py`, `test_close.py`, `test_cli.py`). Tests build fixtures in `tempfile.TemporaryDirectory`, never touch `~/.hermes`.
+- Tests: **stdlib `unittest` modules** (no pytest import in test code; CI runs them through pytest, which collects unittest modules). One module per concern under `tests/` (`test_ledger.py`, `test_consensus.py`, `test_wall.py`, `test_registry.py`, `test_scaffold.py`, `test_brief.py`, `test_close.py`, `test_cli.py`). Tests build fixtures in `tempfile.TemporaryDirectory` and override `COUNCILS_ROOT` with a temp dir via `patch.object`; they never touch the real `~/.hermes`.
 - Style: 4-space indent, no type-annotation ceremony, prefer explicit over clever. A reviewer must be able to audit every line in one sitting — that is the point of one file.
 
 ## Definition of done (every issue)
