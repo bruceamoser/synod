@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Run engine test suite
+        run: uv run --with pytest --with 'jsonschema>=4,<5' --with 'PyYAML>=6,<7' pytest tests/ -q
+      - name: Byte-compile engine
+        run: uv run python -m py_compile scripts/council.py
+      - name: Schema sanity
+        run: uv run --with 'jsonschema>=4,<5' python scripts/check_schemas.py
