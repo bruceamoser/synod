@@ -46,6 +46,8 @@ def sha256_hex(s):
 
 
 def die(code, msg):
+    """Emit the error (JSON on stdout for machines, a line on stderr) and exit."""
+    print(json.dumps({"error": msg}, sort_keys=True))
     print(f"council: {msg}", file=sys.stderr)
     sys.exit(code)
 
@@ -94,7 +96,11 @@ def validate_payload(etype, payload):
 
 
 def append_event(run, etype, payload, role, model=None):
-    """Validate, stamp, append one hash-chained event. Returns the event."""
+    """Validate, stamp, append one hash-chained event. Returns the event.
+
+    Exits 4 on schema violation of the payload or event envelope; exits 1
+    on a non-binding ruling (design law 3).
+    """
     p = ledger_path(run)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a+") as f:
@@ -227,8 +233,9 @@ def positions_at(events, upto_round):
     return topic_positions(evs)
 
 
-def check(run):
-    """Deterministic consensus + impasse check. Prints JSON; exits 0."""
+def _check_result(run):
+    """Compute the consensus/impasse result without printing. Exits 1 if the
+    run has no charter event."""
     charter = charter_of(run)
     events = read_events(run)
     findings = find_findings(events)
@@ -300,6 +307,12 @@ def check(run):
         "ruled_topics": sorted(ruled),
         "impasse": impasse, "impasse_reason": reason, "action": action,
     }
+    return result
+
+
+def check(run):
+    """Deterministic consensus + impasse check. Prints the result as JSON."""
+    result = _check_result(run)
     print(json.dumps(result, sort_keys=True, indent=1))
     return result
 
@@ -352,7 +365,7 @@ def judge_brief(run):
     forbidden corpus; any shared NGRAM_N-word span refuses the brief (exit 2).
     """
     run = Path(run)
-    chk = check(run)
+    chk = _check_result(run)
     contested = chk["contested_topics"]
     if not contested:
         die(1, "no contested topics; there is nothing for the judge to rule on")
@@ -425,3 +438,528 @@ def seal_ruling(run, ruling_file):
     atomic_write(run / "judge" / "rulings.json", json.dumps(rulings, indent=1))
     print(json.dumps({"sealed": [r["id"] for r in rulings]}, sort_keys=True))
     return last
+
+
+# ------------------------------------------------------------- CLI commands
+
+TASK_CONTRARIAN = ("For each contested topic produce at least one concrete "
+                   "counter-example against the leading support position, or "
+                   "record explicitly 'tested A, B, C — no counter-example "
+                   "found'. Emit findings only.")
+TASK_RESEARCHER = ("For each contested topic gather or verify evidence "
+                   "supporting or refuting the open positions. Every evidence "
+                   "item needs source + claim + verbatim excerpt. Paraphrase "
+                   "in argument; never copy the problem brief or source text "
+                   "into argument.")
+TASK_DEFAULT = ("Assess the contested topics from your role's duties. Emit "
+                "findings (stance, evidence, confidence, rebutting where "
+                "applicable).")
+
+
+def slugify(name):
+    """Lowercase a council name into a dir-safe alnum+hyphen slug."""
+    s = re.sub(r"[^a-z0-9-]+", "-", str(name).lower()).strip("-")
+    return re.sub(r"-{2,}", "-", s)
+
+
+def fail(msg):
+    """Exit 1 (usage/charter error) with the standard JSON+stderr contract."""
+    die(1, msg)
+
+
+def require_run_dir(run):
+    """Resolve RUN to a directory; exit 1 if missing or not a directory."""
+    p = Path(run).expanduser()
+    if not p.is_dir():
+        fail(f"run dir not found: {run}")
+    return p
+
+
+def read_json_object(path):
+    """Load a JSON object from path; exit 4 if it is not a JSON object."""
+    try:
+        payload = json.load(open(path))
+    except json.JSONDecodeError as e:
+        die(4, f"{path}: not valid JSON: {e}")
+    if not isinstance(payload, dict):
+        die(4, f"{path}: expected a JSON object")
+    return payload
+
+
+def require_problem_event(run):
+    """The problem statement from the ledger; exit 1 if none was recorded."""
+    for e in read_events(run):
+        if e["type"] == "problem":
+            return e["payload"]["statement"]
+    die(1, "no problem recorded; run record-brief first")
+
+
+def cmd_scaffold(charter_path, problem_file):
+    """Validate a charter, create the run dir, seed the ledger.
+
+    Exit 1 on any charter validation error (each names its field); the run
+    dir is created only after the charter passes.
+    """
+    if not Path(charter_path).is_file():
+        die(1, f"charter file not found: {charter_path}")
+    try:
+        charter = load_yaml(charter_path)
+    except yaml.YAMLError as e:
+        die(1, f"charter is not valid YAML: {e}")
+    if not isinstance(charter, dict):
+        die(1, "charter must be a YAML mapping")
+    if "name" not in charter:
+        die(1, "charter field 'name' is required")
+    if "members" not in charter:
+        die(1, "charter field 'members' is required")
+    name = charter["name"]
+    if not isinstance(name, str) or not name.strip():
+        die(1, "charter field 'name' must be a non-empty string")
+    members = charter["members"]
+    if not isinstance(members, list) or not members:
+        die(1, "charter field 'members' must be a non-empty list")
+    seen = set()
+    for i, m in enumerate(members):
+        if not isinstance(m, dict) or not isinstance(m.get("role"), str) \
+                or not m["role"].strip():
+            die(1, f"charter field 'members[{i}].role' must be a non-empty string")
+        if m["role"] in seen:
+            die(1, f"charter field 'members' has duplicate role '{m['role']}'")
+        seen.add(m["role"])
+        if "model" in m and m["model"] is not None and not isinstance(m["model"], str):
+            die(1, f"charter field 'members[{i}].model' must be a string or null")
+        if "votes" in m and not isinstance(m["votes"], bool):
+            die(1, f"charter field 'members[{i}].votes' must be a boolean")
+    missing = [r for r in CORE_ROLES if r not in seen]
+    if missing:
+        die(1, "charter missing core role(s): " + ", ".join(missing))
+    consensus = charter.get("consensus")
+    if consensus is not None and not isinstance(consensus, dict):
+        die(1, "charter field 'consensus' must be a mapping")
+    consensus = consensus or {}
+    if "quorum" in consensus:
+        q = consensus["quorum"]
+        voters = len(voting_members(charter))
+        if not isinstance(q, int) or isinstance(q, bool) or not (2 <= q <= voters):
+            die(1, f"charter field 'consensus.quorum' must be an integer in "
+                   f"[2, {voters}] (voting members)")
+    max_rounds = consensus.get("max_rounds", 3)
+    if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) \
+            or max_rounds < 1:
+        die(1, "charter field 'consensus.max_rounds' must be an integer >= 1")
+    np_limit = consensus.get("no_progress_limit", 2)
+    if not isinstance(np_limit, int) or isinstance(np_limit, bool) \
+            or np_limit < 1:
+        die(1, "charter field 'consensus.no_progress_limit' must be an integer >= 1")
+
+    slug = slugify(name)
+    if not slug:
+        die(1, "charter field 'name' does not slug to a usable directory name")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    cdir = COUNCILS_ROOT / slug
+    run = cdir / "runs" / stamp
+    n = 2
+    while run.exists():
+        run = cdir / "runs" / f"{stamp}-{n}"
+        n += 1
+    for sub in ("briefs", "judge", "sources"):
+        (run / sub).mkdir(parents=True, exist_ok=True)
+    append_event(run, "charter", charter, role="engine")
+    if problem_file is not None:
+        pf = Path(problem_file).expanduser()
+        if not pf.is_file():
+            die(1, f"problem file not found: {problem_file}")
+        text = pf.read_text(encoding="utf-8")
+        if not text.strip():
+            die(1, f"problem file is empty: {problem_file}")
+        atomic_write(run / "problem.md", text)
+        append_event(run, "problem", {"statement": text, "sources": []},
+                     role="engine")
+    events = len(read_events(run))
+    print(json.dumps({"run": str(run.resolve()), "charter": name,
+                      "events": events}, sort_keys=True))
+    return run
+
+
+def cmd_record_brief(run, file_path):
+    """Record the librarian's problem brief (first `problem` event only).
+
+    Exits 1 on empty input or if a problem event already exists.
+    """
+    run = require_run_dir(run)
+    pf = Path(file_path).expanduser()
+    if not pf.is_file():
+        die(1, f"brief file not found: {file_path}")
+    text = pf.read_text(encoding="utf-8")
+    if not text.strip():
+        die(1, f"brief file is empty: {file_path}")
+    if any(e["type"] == "problem" for e in read_events(run)):
+        die(1, "problem already recorded; ledger is append-only")
+    atomic_write(run / "problem.md", text)
+    append_event(run, "problem", {"statement": text, "sources": []},
+                 role="librarian")
+    print(json.dumps({"problem": str(run / "problem.md")}, sort_keys=True))
+
+
+def unique_label_path(base_dir, label):
+    """A collision-free path for label under base_dir (-2, -3, ... suffixes)."""
+    candidate = base_dir / label
+    n = 2
+    while candidate.exists():
+        candidate = base_dir / f"{label}-{n}"
+        n += 1
+    return candidate
+
+
+def cmd_add_source(run, file_path, label):
+    """Copy a raw source into the run and record a `digest` event.
+
+    Exits 1 if the source file is missing.
+    """
+    run = require_run_dir(run)
+    pf = Path(file_path).expanduser()
+    if not pf.is_file():
+        die(1, f"source file not found: {file_path}")
+    text = pf.read_text(encoding="utf-8")
+    label = label or pf.stem
+    dest = unique_label_path(run / "sources", label)
+    atomic_write(dest, text)
+    append_event(run, "digest",
+                 {"kind": "source", "label": dest.name,
+                  "sha256": sha256_hex(text), "char_count": len(text)},
+                 role="librarian")
+    print(json.dumps({"source": str(dest), "label": dest.name}, sort_keys=True))
+
+
+def member_task(role):
+    """The role-specific round task string (engine constant, never LLM text)."""
+    if role == "contrarian":
+        return TASK_CONTRARIAN
+    if role == "researcher":
+        return TASK_RESEARCHER
+    return TASK_DEFAULT
+
+
+def cmd_brief(run, round_no, role):
+    """Render one member's round-N briefing packet.
+
+    Exits 1 if no problem is recorded, the role is not a charter member, or
+    the role is the judge (the wall: the judge never receives a packet).
+    """
+    run = require_run_dir(run)
+    if round_no < 1:
+        fail("round must be an integer >= 1")
+    charter = charter_of(run)
+    members = [m["role"] for m in charter["members"]]
+    if role not in members:
+        fail(f"role '{role}' is not a member of this charter")
+    if role == "judge":
+        fail("wall: judge never receives a briefing packet")
+    statement = require_problem_event(run)
+    problem_md = run / "problem.md"
+    if problem_md.is_file():
+        problem_text = problem_md.read_text(encoding="utf-8")
+    else:
+        problem_text = statement
+    events = read_events(run)
+    prior = [e for e in events if e["type"] != "finding"
+             or e["payload"]["round"] < round_no]
+    pos = {}
+    for (r, t), s in topic_positions(prior).items():
+        pos.setdefault(t, {})[r] = s
+    refutes = un_rebutted_refutes([e for e in prior if e["type"] == "finding"])
+    packet = {
+        "council": charter.get("name"),
+        "role": role,
+        "round": round_no,
+        "problem_brief": problem_text,
+        "ledger_view": {
+            "positions": pos,
+            "open_refutes": [
+                {"id": p["id"], "role": p["role"], "topic": p["topic"],
+                 "stance": p["stance"], "argument": p["argument"],
+                 "confidence": p["confidence"],
+                 "evidence": [{"source": ev["source"], "claim": ev["claim"]}
+                              for ev in (p.get("evidence") or [])]}
+                for p in refutes
+            ],
+            "sealed_rulings": [e["payload"] for e in events
+                               if e["type"] == "ruling"],
+        },
+        "task": member_task(role),
+    }
+    dest = run / "briefs" / f"round-{round_no:02d}" / f"{role}.json"
+    atomic_write(dest, json.dumps(packet, indent=1, sort_keys=True) + "\n")
+    print(json.dumps({"brief": str(dest), "role": role, "round": round_no},
+                     sort_keys=True))
+    return packet
+
+
+def cmd_finding(run, file_path, role, model):
+    """Ingest one member finding file into the ledger.
+
+    Exits 4 on schema violation, 1 on role mismatch or a non-member role.
+    """
+    run = require_run_dir(run)
+    charter = charter_of(run)
+    if role not in [m["role"] for m in charter["members"]]:
+        die(1, f"role '{role}' is not a member of this charter")
+    payload = read_json_object(file_path)
+    if payload.get("role") != role:
+        die(1, "role mismatch: finding file role "
+            f"'{payload.get('role')}' does not match --role '{role}'")
+    event = append_event(run, "finding", payload, role=role, model=model)
+    print(json.dumps({"finding": event["payload"]["id"],
+                      "round": event["payload"]["round"],
+                      "topic": event["payload"]["topic"]}, sort_keys=True))
+    return event
+
+
+def cmd_note_round(run, round_no):
+    """Record a round-end digest with the round's finding count."""
+    run = require_run_dir(run)
+    if round_no < 1:
+        fail("round must be an integer >= 1")
+    count = len(round_findings(read_events(run), round_no))
+    append_event(run, "digest",
+                 {"kind": "round-end", "round": round_no,
+                  "finding_count": count},
+                 role="engine")
+    print(json.dumps({"round": round_no, "finding_count": count},
+                     sort_keys=True))
+
+
+def cmd_verify(run):
+    """Recompute the ledger chain and schemas; exits 3 on any break."""
+    require_run_dir(run)
+    verify(run)
+
+
+def cmd_check(run):
+    """Run the deterministic consensus/impasse check and print the result."""
+    require_run_dir(run)
+    return check(run)
+
+
+def cmd_judge_brief(run):
+    """Assemble the blind judge brief (wall lint; exits 2 on a leak)."""
+    require_run_dir(run)
+    return judge_brief(run)
+
+
+def cmd_seal_ruling(run, ruling_file):
+    """Validate and seal a judge ruling (or list of rulings)."""
+    run = require_run_dir(run)
+    return seal_ruling(run, ruling_file)
+
+
+def cmd_close(run, rec_file):
+    """Validate the final recommendation, append close, write the reports.
+
+    Exits 4 on schema violation, 1 if any sealed ruling id is missing from
+    rulings_applied, or if the run is already closed.
+    """
+    run = require_run_dir(run)
+    if any(e["type"] == "close" for e in read_events(run)):
+        die(1, "run already closed; ledger is append-only")
+    rec = read_json_object(rec_file)
+    validate_payload("recommendation", rec)
+    events = read_events(run)
+    sealed = [e["payload"]["id"] for e in events if e["type"] == "ruling"]
+    applied = set(rec.get("rulings_applied") or [])
+    missing = [r for r in sealed if r not in applied]
+    if missing:
+        die(1, "recommendation missing sealed ruling id(s): " + ", ".join(missing))
+    append_event(run, "recommendation", rec, role="librarian")
+    chk = _check_result(run)
+    close_payload = {
+        "status": "closed",
+        "topics": sorted(chk["topics"]),
+        "ruling_count": len(sealed),
+        "round": chk["round"],
+    }
+    append_event(run, "close", close_payload, role="librarian")
+
+    council_name = charter_of(run).get("name")
+    topics_out = chk["topics"]
+    rec_lines = [f"# Recommendation — {council_name}", ""]
+    rec_lines += [f"**Verdict:** {rec['recommendation']}", "",
+                  f"**Confidence:** {rec['confidence']}", "",
+                  "## Per-topic outcomes", ""]
+    for t in sorted(topics_out):
+        info = topics_out[t]
+        rec_lines.append(f"- {t}: {info['state']}")
+    if rec.get("resolved"):
+        rec_lines += ["", "## Resolved (per the librarian)"]
+        for r in rec["resolved"]:
+            rec_lines.append(f"- {r['topic']}: {r['outcome']}")
+    dissent = rec.get("dissent") or []
+    rec_lines += ["", "## Dissenting views", ""]
+    if dissent:
+        for d in dissent:
+            rec_lines.append(f"- {d['role']} on {d['topic']}: {d['position']}")
+    else:
+        rec_lines.append("- none recorded")
+    rec_lines += ["", "## Rulings applied", ""]
+    if sealed:
+        for r in sealed:
+            p = next(e["payload"] for e in events
+                     if e["type"] == "ruling" and e["payload"]["id"] == r)
+            rec_lines.append(f"- {r} ({p['topic']}): {p['ruling']}")
+    else:
+        rec_lines.append("- none")
+    atomic_write(run / "recommendation.md", "\n".join(rec_lines) + "\n")
+
+    findings = find_findings(events)
+    report_lines = [
+        f"# Council report — {council_name}",
+        "",
+        f"- Run dir: {run}",
+        f"- Rounds elapsed: {chk['round']}",
+        f"- Findings: {len(findings)}",
+        f"- Rulings: {', '.join(sealed) if sealed else 'none'}",
+        f"- Final verdict: {rec['recommendation']}",
+        "",
+        "## Summary",
+        "",
+        rec["recommendation"],
+        "",
+    ]
+    atomic_write(run / "report.md", "\n".join(report_lines) + "\n")
+    print(json.dumps({"closed": True, "run": str(run.resolve()),
+                      "rulings": len(sealed)}, sort_keys=True))
+
+
+# ------------------------------------------------------------------- CLI
+
+class CouncilArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser whose usage errors follow the die(1, ...) contract.
+
+    argparse's default error() exits 2; the fixed exit-code contract
+    (AGENTS.md) reserves 1 for usage errors, so every usage error is routed
+    through die(), which emits the JSON {"error": ...} object on stdout.
+    """
+
+    def error(self, message):
+        """Route an argparse usage error through die() (exit 1 + JSON)."""
+        die(1, message)
+
+
+def build_parser():
+    """The argparse tree for the whole command surface."""
+    parser = CouncilArgumentParser(
+        prog="council.py",
+        description="Synod: deterministic multi-council deliberation engine. "
+                    "Code does the determinism; the orchestrator does the judgment.")
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND",
+                                parser_class=CouncilArgumentParser)
+
+    p = sub.add_parser("scaffold",
+                       help="validate a charter and create a new run dir")
+    p.add_argument("charter", help="path to the charter YAML")
+    p.add_argument("--problem-file", help="optional problem statement file")
+    p.set_defaults(func=lambda a: cmd_scaffold(a.charter, a.problem_file))
+
+    p = sub.add_parser("record-brief",
+                       help="record the librarian's problem brief (first only)")
+    p.add_argument("run", help="run directory")
+    p.add_argument("--file", required=True, help="path to the brief text file")
+    p.set_defaults(func=lambda a: cmd_record_brief(a.run, a.file))
+
+    p = sub.add_parser("add-source",
+                       help="copy a raw source into the run and log a digest")
+    p.add_argument("run", help="run directory")
+    p.add_argument("--file", required=True, help="path to the source file")
+    p.add_argument("--label", help="label under sources/ (default: file stem)")
+    p.set_defaults(func=lambda a: cmd_add_source(a.run, a.file, a.label))
+
+    p = sub.add_parser("brief",
+                       help="render one member's round-N briefing packet")
+    p.add_argument("run", help="run directory")
+    p.add_argument("--round", type=int, required=True, help="round number")
+    p.add_argument("--role", required=True, help="member role slug")
+    p.set_defaults(func=lambda a: cmd_brief(a.run, a.round, a.role))
+
+    p = sub.add_parser("finding",
+                       help="validate and append one member finding")
+    p.add_argument("run", help="run directory")
+    p.add_argument("--file", required=True, help="path to the finding JSON")
+    p.add_argument("--role", required=True, help="emitting role slug")
+    p.add_argument("--model", help="model id for provenance (default null)")
+    p.set_defaults(func=lambda a: cmd_finding(a.run, a.file, a.role, a.model))
+
+    p = sub.add_parser("note-round",
+                       help="record a round-end digest with finding count")
+    p.add_argument("run", help="run directory")
+    p.add_argument("--round", type=int, required=True, help="round number")
+    p.set_defaults(func=lambda a: cmd_note_round(a.run, a.round))
+
+    p = sub.add_parser("verify",
+                       help="recompute the ledger hash chain and schemas")
+    p.add_argument("run", help="run directory")
+    p.set_defaults(func=lambda a: cmd_verify(a.run))
+
+    p = sub.add_parser("check",
+                       help="deterministic consensus and impasse check")
+    p.add_argument("run", help="run directory")
+    p.set_defaults(func=lambda a: cmd_check(a.run))
+
+    p = sub.add_parser("judge-brief",
+                       help="assemble the blind judge brief (wall lint)")
+    p.add_argument("run", help="run directory")
+    p.set_defaults(func=lambda a: cmd_judge_brief(a.run))
+
+    p = sub.add_parser("seal-ruling",
+                       help="validate and seal a judge ruling as fact")
+    p.add_argument("run", help="run directory")
+    p.add_argument("--ruling-file", required=True,
+                   help="path to ruling JSON/YAML (object or array)")
+    p.set_defaults(func=lambda a: cmd_seal_ruling(a.run, a.ruling_file))
+
+    p = sub.add_parser("close",
+                       help="validate the recommendation and close the run")
+    p.add_argument("run", help="run directory")
+    p.add_argument("--recommendation-file", required=True,
+                   help="path to the recommendation JSON")
+    p.set_defaults(func=lambda a: cmd_close(a.run, a.recommendation_file))
+
+    return parser
+
+
+def _exit_code(exc):
+    """Normalize a SystemExit to an int exit code (None -> 0, str -> 1)."""
+    code = exc.code
+    if code is None:
+        return 0
+    return code if isinstance(code, int) else 1
+
+
+def main(argv=None):
+    """CLI entry point; returns the process exit code.
+
+    Every non-zero exit has already emitted a JSON {"error": ...} object on
+    stdout (die() does this, and usage errors are routed through die() by
+    CouncilArgumentParser.error). main catches the SystemExit those raise
+    and converts it to a return code; unexpected exceptions are also
+    reported as a JSON error object (exit 1).
+    """
+    parser = build_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as e:
+        return _exit_code(e)
+    try:
+        if not getattr(args, "func", None):
+            parser.print_help(sys.stderr)
+            die(1, "no command given")
+        args.func(args)
+    except SystemExit as e:
+        return _exit_code(e)
+    except Exception as e:
+        print(json.dumps({"error": f"unexpected: {e}"}, sort_keys=True))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

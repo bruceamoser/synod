@@ -94,6 +94,24 @@ def ruling(topic, point=None, decision=None):
     }
 
 
+def write_charter(tmp, name="test-council", members=None, consensus=None):
+    """Write a charter YAML file under tmp and return its path (Path).
+
+    Defaults to the core four; override members/consensus to exercise
+    validation. Uses yaml.safe_dump so the engine's load_yaml reads it back.
+    """
+    import yaml
+    charter = {
+        "name": name,
+        "members": [dict(m) for m in (members or CORE_CHARTER_MEMBERS)],
+        "consensus": (dict(consensus) if consensus is not None
+                      else {"max_rounds": 3, "no_progress_limit": 2}),
+    }
+    path = Path(tmp) / "charter.yaml"
+    path.write_text(yaml.safe_dump(charter, sort_keys=True), encoding="utf-8")
+    return path
+
+
 def ruling_event_id(run, topic):
     """The auto-assigned id (r-00N) of the first ruling event for a topic."""
     for e in engine.read_events(run):
