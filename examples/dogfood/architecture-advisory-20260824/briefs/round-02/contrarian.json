@@ -1,0 +1,45 @@
+{
+ "council": "architecture-advisory",
+ "ledger_view": {
+  "open_refutes": [
+   {
+    "argument": "Option (a) as proposed \u2014 a single long-lived service whose task queue lives in process memory \u2014 silently loses the undrained remainder of a 50-file burst on any crash or routine restart, and nothing re-triggers those files because there is no scheduler or webhook to re-fire them. The drain window is material: at the measured 3 files/minute, a 50-file burst takes ~17 minutes to clear, so a restart minutes into a burst drops tens of files. The ops source shows restarts are a weekly routine (6 hours/week), making this a recurring event, not a tail risk. The source-given mitigation (persist the queue to a DB table, add a dead-letter path) converts option (a) into a stateful durable-queue system needing DB schema, serialization, startup recovery, and DLQ handling \u2014 machinery a per-batch job model inherits from its trigger for free \u2014 with zero measured evidence that a two-engineer team can operate it at the quoted cost. This refute stands until answered with a concrete persistence+recovery design and its operating burden.",
+    "confidence": 0.65,
+    "evidence": [
+     {
+      "claim": "The option-(a) design holds its task queue in process memory; the source itself flags that a crash of the long-lived service loses in-flight and queued work unless the queue is persisted, and persistence is not part of the option as proposed.",
+      "source": "failure"
+     },
+     {
+      "claim": "At 3 files/minute, a 50-file burst takes roughly 17 minutes to drain, so the crash-loss window is measured in minutes \u2014 long enough that a restart or crash mid-burst drops the entire undrained remainder, not just one in-flight file.",
+      "source": "cost"
+     },
+     {
+      "claim": "Restarts are a routine weekly event for this team (6 hours/week), so the crash window that destroys in-process queue state is hit regularly; combined with no external trigger to re-enqueue, the lost files are never re-ingested.",
+      "source": "ops-capacity"
+     },
+     {
+      "claim": "Worked counter-example: a sync drops a 50-file burst into the in-process queue at 09:00; the service crashes or is restarted at 09:05 while draining at 3 files/min (~15 files done). The remaining ~35 files exist only in memory and vanish; no scheduler or webhook exists to re-trigger them under option (a). The published mitigation (persist queue to a database table or durable queue, add a dead-letter path) silently transforms (a) into a stateful system requiring DB schema, serialization, startup recovery, and DLQ handling \u2014 machinery the per-batch model gets from its trigger \u2014 with no measured evidence the two-engineer team can build or run it, while the same source credits the per-batch model with natural failure isolation (a failed job loses only that batch).",
+      "source": "reasoning"
+     }
+    ],
+    "id": "f-002",
+    "role": "contrarian",
+    "stance": "refute",
+    "topic": "t-01"
+   }
+  ],
+  "positions": {
+   "t-01": {
+    "contrarian": "refute",
+    "librarian": "support",
+    "researcher": "support"
+   }
+  },
+  "sealed_rulings": []
+ },
+ "problem_brief": "Clarity AI Assistant needs a new document-ingestion worker. It takes incoming files (PDF, DOCX, email), runs them through extraction and chunking, and writes results to the vector store. Expected load for a single tenant: about 200 files/day, spiky (bursts of 50 files within a few minutes after a sync). The ops team is two engineers with no dedicated SRE and a shared on-call.\n\nQuestion: should the ingestion worker be (a) a single long-lived service holding an in-process task queue, or (b) a set of short-lived per-batch jobs (one job per batch, triggered by schedule or webhook)?\n\nWeigh failure isolation, cost, operational burden, and headroom. Recommend exactly one option and state the conditions under which you would change your mind.\n",
+ "role": "contrarian",
+ "round": 2,
+ "task": "For each contested topic produce at least one concrete counter-example against the leading support position, or record explicitly 'tested A, B, C \u2014 no counter-example found'. Emit findings only."
+}

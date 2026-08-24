@@ -1,0 +1,12 @@
+{
+ "council": "review-board",
+ "ledger_view": {
+  "open_refutes": [],
+  "positions": {},
+  "sealed_rulings": []
+ },
+ "problem_brief": "Should Synod council deliberations be public by default, or private by default?\n\nPublic by default: once a run closes, its full record (member findings, arguments, citations, digests) is readable by any organization member.\n\nPrivate by default: only the orchestrator and named members can read a run until the orchestrator publishes the final recommendation.md to the organization. The raw record is never published.\n\nWeigh: accountability and legitimacy; the chilling effect on dissent (position-gaming); and exposure of sensitive content (unreleased system names, people, security-relevant architecture).\n",
+ "role": "librarian",
+ "round": 1,
+ "task": "Assess the contested topics from your role's duties. Emit findings (stance, evidence, confidence, rebutting where applicable)."
+}
