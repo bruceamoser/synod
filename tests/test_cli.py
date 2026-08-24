@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 import yaml
 
-from _engine import engine, finding, ruling, write_charter
+from _engine import (CORE_CHARTER_MEMBERS, engine, finding, ruling,
+                     write_charter)
 
 ALL_COMMANDS = [
     "scaffold", "record-brief", "add-source", "finding", "note-round",
@@ -414,6 +415,64 @@ class FindingTest(unittest.TestCase):
                 ["finding", str(run), "--file", str(f), "--role", "researcher"], tmp)
             self.assertEqual(code, 4)
 
+    def test_charter_model_enforced_when_flag_passed(self):
+        # Spec 2.2: provenance is charter-explicit. A charter that names a
+        # model for a role records it in the ledger; passing the same
+        # --model is consistent and allowed.
+        with tempfile.TemporaryDirectory() as tmp:
+            members = [dict(m) for m in CORE_CHARTER_MEMBERS]
+            members[3]["model"] = "cloud-decorrelated"  # researcher
+            charter = write_charter(tmp, members=members)
+            code, out, err = cli(["scaffold", str(charter)], tmp)
+            self.assertEqual(code, 0, err)
+            run = Path(parse_json(out)["run"])
+            f = Path(tmp) / "f.json"
+            f.write_text(json.dumps(finding("researcher", "t-01", "support")))
+            code, out, err = cli(
+                ["finding", str(run), "--file", str(f),
+                 "--role", "researcher", "--model", "cloud-decorrelated"], tmp)
+            self.assertEqual(code, 0, err)
+            ev = engine.read_events(run)[-1]
+            self.assertEqual(ev["provenance"]["model"], "cloud-decorrelated")
+
+    def test_charter_model_mismatch_exits_1(self):
+        # Provenance is an engine fact, not a member claim: a --model that
+        # contradicts the charter's declared model is refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            members = [dict(m) for m in CORE_CHARTER_MEMBERS]
+            members[3]["model"] = "charter-model"  # researcher
+            charter = write_charter(tmp, members=members)
+            code, out, err = cli(["scaffold", str(charter)], tmp)
+            self.assertEqual(code, 0, err)
+            run = Path(parse_json(out)["run"])
+            f = Path(tmp) / "f.json"
+            f.write_text(json.dumps(finding("researcher", "t-01", "support")))
+            code, out, err = cli(
+                ["finding", str(run), "--file", str(f),
+                 "--role", "researcher", "--model", "something-else"], tmp)
+            self.assertEqual(code, 1)
+            self.assertIn("provenance mismatch", parse_json(out)["error"])
+            self.assertEqual(
+                [e for e in engine.read_events(run) if e["type"] == "finding"], [])
+
+    def test_charter_model_recorded_without_flag(self):
+        # No --model, charter declares one: the declared model is the
+        # provenance (the orchestrator is not required to repeat it).
+        with tempfile.TemporaryDirectory() as tmp:
+            members = [dict(m) for m in CORE_CHARTER_MEMBERS]
+            members[3]["model"] = "charter-model"  # researcher
+            charter = write_charter(tmp, members=members)
+            code, out, err = cli(["scaffold", str(charter)], tmp)
+            self.assertEqual(code, 0, err)
+            run = Path(parse_json(out)["run"])
+            f = Path(tmp) / "f.json"
+            f.write_text(json.dumps(finding("researcher", "t-01", "support")))
+            code, out, err = cli(
+                ["finding", str(run), "--file", str(f), "--role", "researcher"], tmp)
+            self.assertEqual(code, 0, err)
+            ev = engine.read_events(run)[-1]
+            self.assertEqual(ev["provenance"]["model"], "charter-model")
+
 
 class NoteRoundTest(unittest.TestCase):
     def test_note_round_counts_findings_in_round(self):
@@ -475,6 +534,72 @@ class CloseTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(parse_json(out)["sealed"], ["r-001"])
         return run
+
+    def test_seal_records_judge_model_provenance(self):
+        # Spec 2.2: the judge is a role too; its ruling carries provenance.
+        # Without --model, the charter's declared judge model is used (null
+        # here = config default).
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self._run_with_sealed_ruling(tmp)
+            ruling_ev = next(e for e in engine.read_events(run)
+                             if e["type"] == "ruling")
+            self.assertEqual(ruling_ev["provenance"]["role"], "judge")
+            self.assertIsNone(ruling_ev["provenance"]["model"])
+
+    def test_seal_records_explicit_judge_model(self):
+        # A charter-explicit judge model flows into the ruling's provenance
+        # without the orchestrator having to pass --model (the engine reads
+        # the charter), matching the finding behavior.
+        with tempfile.TemporaryDirectory() as tmp:
+            charter2 = write_charter(
+                tmp,
+                members=[dict(m, model=("deepseek-judge" if m["role"] == "judge" else None))
+                         for m in CORE_CHARTER_MEMBERS])
+            code, out, err = cli(["scaffold", str(charter2)], tmp)
+            self.assertEqual(code, 0, err)
+            run2 = Path(parse_json(out)["run"])
+            brief = Path(tmp) / "b2.txt"
+            brief.write_text("Should we ship the beta by Friday or hold for next sprint?")
+            code, out, err = cli(["record-brief", str(run2), "--file", str(brief)], tmp)
+            self.assertEqual(code, 0, err)
+            f1 = Path(tmp) / "g1.json"
+            f1.write_text(json.dumps(finding("researcher", "t-01", "support",
+                                             argument="The plan is sound on balance and ready to proceed now.",
+                                             evidence=[{"source": "reasoning", "claim": "the case supports it",
+                                                        "quote_or_excerpt": "n/a"}])))
+            f2 = Path(tmp) / "g2.json"
+            f2.write_text(json.dumps(finding("contrarian", "t-01", "refute",
+                                             argument="The plan assumes a stable upstream that we do not control.",
+                                             evidence=[{"source": "reasoning", "claim": "the risk is real",
+                                                        "quote_or_excerpt": "n/a"}])))
+            for f, role in ((f1, "researcher"), (f2, "contrarian")):
+                code, out, err = cli(["finding", str(run2), "--file", str(f), "--role", role], tmp)
+                self.assertEqual(code, 0, err)
+            code, out, err = cli(["judge-brief", str(run2)], tmp)
+            self.assertEqual(code, 0, err)
+            rf = Path(tmp) / "r.json"
+            rf.write_text(json.dumps(ruling("t-01")))
+            code, out, err = cli(["seal-ruling", str(run2), "--ruling-file", str(rf)], tmp)
+            self.assertEqual(code, 0, err)
+            ruling_ev = next(e for e in engine.read_events(run2)
+                             if e["type"] == "ruling")
+            self.assertEqual(ruling_ev["provenance"]["model"], "deepseek-judge")
+
+    def test_close_report_has_heterogeneity_budget(self):
+        # Spec 2.2: report.md states which model produced the findings and
+        # the judge, and flags single-model runs as untested decorrelation.
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self._run_with_sealed_ruling(tmp)
+            rec = Path(tmp) / "rec.json"
+            rec.write_text(json.dumps(self._recommendation(["r-001"])))
+            code, out, err = cli(
+                ["close", str(run), "--recommendation-file", str(rec)], tmp)
+            self.assertEqual(code, 0, err)
+            report = (run / "report.md").read_text(encoding="utf-8")
+            self.assertIn("## Heterogeneity budget", report)
+            self.assertIn("- judge: config default (no charter override)", report)
+            self.assertIn("- config default: contrarian, researcher", report)
+            self.assertIn("decorrelation: single model", report)
 
     def test_seal_stamps_sealed_at_overriding_judge_placeholder(self):
         # Regression: the dogfood judge supplied a placeholder sealed_at it
