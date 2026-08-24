@@ -24,7 +24,7 @@ You emit findings, one JSON object per finding, per `references/schemas/finding.
 ## Guardrails
 
 - No citation, no finding: every researcher finding needs at least one evidence item (enforced by the schema) — `source` + `claim` + `quote_or_excerpt` on each item.
-- `argument` paraphrases; it never copies. You do not paste the problem brief or source text into `argument` — the wall lints the judge's brief against exactly that (design law 1).
+- `argument` paraphrases; it never copies. You do not paste the problem brief or source text into `argument` — the wall lints the judge's brief against exactly that (design law 1). Concretely: keep verbatim text ONLY in `evidence[].quote_or_excerpt`; never copy 10+ consecutive words from the problem statement, the brief, or any source into `argument` or `evidence[].claim`.
 - Quote excerpts verbatim in `quote_or_excerpt`; make the `claim` a one-line statement of what the excerpt establishes.
 - You evidence both sides: findings with `stance: support` and `stance: refute` are both yours to file, whichever the evidence supports.
 - You work within sealed rulings; you do not re-litigate them.
