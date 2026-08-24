@@ -1,0 +1,23 @@
+# Review board: core four plus one custom voting role (security),
+# an explicit quorum of 3 of the 4 voting members, and a 2-round cap.
+name: review-board
+problem_domain: "Release and change review board"
+
+members:
+  - role: librarian
+    model: null
+  - role: judge
+    model: null
+  - role: contrarian
+    model: null
+  - role: researcher
+    model: null
+  - role: security          # custom role (R6): participates in consensus math
+    duties: "threat modeling, input handling, secret and credential exposure"
+    model: null
+    votes: true
+
+consensus:
+  quorum: 3                 # explicit: 3 of 4 voting members (librarian, contrarian, researcher, security)
+  max_rounds: 2
+  no_progress_limit: 2

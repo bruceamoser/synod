@@ -494,18 +494,12 @@ def require_problem_event(run):
     die(1, "no problem recorded; run record-brief first")
 
 
-def cmd_scaffold(charter_path, problem_file):
-    """Validate a charter, create the run dir, seed the ledger.
+def validate_charter(charter):
+    """Validate a charter dict; return it unchanged.
 
-    Exit 1 on any charter validation error (each names its field); the run
-    dir is created only after the charter passes.
+    Shared by scaffold and the registry commands. Exits 1 on any violation,
+    and every error names the offending charter field.
     """
-    if not Path(charter_path).is_file():
-        die(1, f"charter file not found: {charter_path}")
-    try:
-        charter = load_yaml(charter_path)
-    except yaml.YAMLError as e:
-        die(1, f"charter is not valid YAML: {e}")
     if not isinstance(charter, dict):
         die(1, "charter must be a YAML mapping")
     if "name" not in charter:
@@ -551,6 +545,23 @@ def cmd_scaffold(charter_path, problem_file):
     if not isinstance(np_limit, int) or isinstance(np_limit, bool) \
             or np_limit < 1:
         die(1, "charter field 'consensus.no_progress_limit' must be an integer >= 1")
+    return charter
+
+
+def cmd_scaffold(charter_path, problem_file):
+    """Validate a charter, create the run dir, seed the ledger.
+
+    Exit 1 on any charter validation error (each names its field); the run
+    dir is created only after the charter passes.
+    """
+    if not Path(charter_path).is_file():
+        die(1, f"charter file not found: {charter_path}")
+    try:
+        charter = load_yaml(charter_path)
+    except yaml.YAMLError as e:
+        die(1, f"charter is not valid YAML: {e}")
+    charter = validate_charter(charter)
+    name = charter["name"]
 
     slug = slugify(name)
     if not slug:
@@ -830,6 +841,183 @@ def cmd_close(run, rec_file):
                       "rulings": len(sealed)}, sort_keys=True))
 
 
+# ---------------------------------------------------------------- registry
+
+REGISTRY_NAME = "registry.yaml"
+COUNCIL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def registry_path():
+    """The registry file path under COUNCILS_ROOT (registry.yaml)."""
+    return COUNCILS_ROOT / REGISTRY_NAME
+
+
+def load_registry():
+    """The registry's council map; an empty map when the file does not exist.
+
+    The file shape (ARCHITECTURE.md S6.1) is a single top-level ``councils:``
+    mapping of name -> {charter, description, status, registered_at}. Exits 1
+    on a malformed or non-object registry file.
+    """
+    p = registry_path()
+    if not p.exists():
+        return {}
+    data = None
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        die(1, f"registry is not valid YAML: {e}")
+    if data is None:
+        return {}
+    if not isinstance(data, dict) or "councils" not in data:
+        die(1, "registry must be a mapping with a top-level 'councils' key")
+    councils = data["councils"]
+    if councils is None:
+        return {}
+    if not isinstance(councils, dict):
+        die(1, "registry 'councils' must be a mapping")
+    return councils
+
+
+def save_registry(councils):
+    """Write the registry atomically under the ``councils:`` wrapper."""
+    text = yaml.safe_dump({"councils": councils}, sort_keys=True,
+                          default_flow_style=False, allow_unicode=True)
+    atomic_write(registry_path(), text)
+
+
+def require_name(name):
+    """Reduce a council name to its lowercase alnum+hyphen slug (run-dir rule).
+
+    Exits 1 if the name does not slug to a usable council name.
+    """
+    slug = slugify(name)
+    if not slug or not COUNCIL_NAME_RE.match(slug):
+        fail(f"council name must be a lowercase alnum+hyphen slug: '{name}'")
+    return slug
+
+
+def cmd_validate_charter(path):
+    """Validate a charter YAML file and print its effective summary.
+
+    Prints {"valid": true, "name", "members", "quorum"} on success; exits 1
+    with a field-naming error otherwise.
+    """
+    p = Path(path).expanduser()
+    if not p.is_file():
+        die(1, f"charter file not found: {path}")
+    try:
+        charter = load_yaml(p)
+    except yaml.YAMLError as e:
+        die(1, f"charter is not valid YAML: {e}")
+    charter = validate_charter(charter)
+    print(json.dumps({
+        "valid": True,
+        "name": charter["name"],
+        "members": [m["role"] for m in charter["members"]],
+        "quorum": quorum_of(charter),
+    }, sort_keys=True))
+    return charter
+
+
+def cmd_register(path):
+    """Validate a charter and record it in the registry under its slug.
+
+    Exits 1 if the file is missing, the name is not a usable slug, or the
+    council is already registered and active. A retired council may be
+    re-registered (its entry is replaced, status back to ``active``).
+    Prints {"registered", "registry"}.
+    """
+    p = Path(path).expanduser()
+    if not p.is_file():
+        die(1, f"charter file not found: {path}")
+    try:
+        charter = load_yaml(p)
+    except yaml.YAMLError as e:
+        die(1, f"charter is not valid YAML: {e}")
+    charter = validate_charter(charter)
+    name = require_name(charter["name"])
+    reg = load_registry()
+    if name in reg and reg[name].get("status") == "active":
+        fail(f"council '{name}' is already registered; deregister first")
+    reg[name] = {
+        "charter": str(p.resolve()),
+        "description": charter.get("problem_domain") or "",
+        "status": "active",
+        "registered_at": now_iso(),
+    }
+    save_registry(reg)
+    print(json.dumps({"registered": name,
+                      "registry": str(registry_path())}, sort_keys=True))
+    return name
+
+
+def cmd_deregister(name):
+    """Mark a council retired. Exits 1 if the name is unknown.
+
+    Per ARCHITECTURE.md S6.3 the registry is a discovery surface, not a
+    garbage collector: deregister marks ``status: retired`` and leaves the
+    entry (and any runs) for human retention decisions.
+    """
+    slug = require_name(name)
+    reg = load_registry()
+    if slug not in reg:
+        fail(f"council '{slug}' is not registered")
+    reg[slug]["status"] = "retired"
+    save_registry(reg)
+    print(json.dumps({"deregistered": slug, "status": "retired"},
+                     sort_keys=True))
+
+
+def cmd_list():
+    """List registered councils sorted by name (an empty list is fine).
+
+    Retired councils are listed too, with their status, so the registry
+    stays a complete discovery surface.
+    """
+    reg = load_registry()
+    councils = [{"name": n, "charter": e.get("charter"),
+                 "description": e.get("description"),
+                 "status": e.get("status", "active"),
+                 "registered_at": e.get("registered_at")}
+                for n, e in sorted(reg.items())]
+    print(json.dumps({"councils": councils}, sort_keys=True))
+    return councils
+
+
+def cmd_show(name):
+    """Show a registered council's roster summary.
+
+    Exits 1 if the name is unknown, if the registered charter file no longer
+    exists (the path is named), or if the charter no longer validates.
+    Retired councils are still shown, with their status.
+    """
+    slug = require_name(name)
+    reg = load_registry()
+    if slug not in reg:
+        fail(f"council '{slug}' is not registered")
+    entry = reg[slug]
+    charter_path = Path(entry.get("charter") or "")
+    if not charter_path.is_file():
+        die(1, f"charter file no longer exists: {charter_path}")
+    try:
+        charter = load_yaml(charter_path)
+    except yaml.YAMLError as e:
+        die(1, f"charter is not valid YAML: {e}")
+    charter = validate_charter(charter)
+    print(json.dumps({
+        "name": slug,
+        "charter": str(charter_path),
+        "description": entry.get("description"),
+        "status": entry.get("status", "active"),
+        "registered_at": entry.get("registered_at"),
+        "members": [m["role"] for m in charter["members"]],
+        "quorum": quorum_of(charter),
+        "core_roles_complete": True,
+    }, sort_keys=True))
+    return charter
+
+
 # ------------------------------------------------------------------- CLI
 
 class CouncilArgumentParser(argparse.ArgumentParser):
@@ -922,6 +1110,30 @@ def build_parser():
     p.add_argument("--recommendation-file", required=True,
                    help="path to the recommendation JSON")
     p.set_defaults(func=lambda a: cmd_close(a.run, a.recommendation_file))
+
+    p = sub.add_parser("validate-charter",
+                       help="validate a charter YAML and print its summary")
+    p.add_argument("path", help="path to the charter YAML")
+    p.set_defaults(func=lambda a: cmd_validate_charter(a.path))
+
+    p = sub.add_parser("register",
+                       help="validate a charter and register it by name")
+    p.add_argument("path", help="path to the charter YAML")
+    p.set_defaults(func=lambda a: cmd_register(a.path))
+
+    p = sub.add_parser("deregister",
+                       help="remove a council from the registry")
+    p.add_argument("name", help="registered council name")
+    p.set_defaults(func=lambda a: cmd_deregister(a.name))
+
+    p = sub.add_parser("list",
+                       help="list registered councils (sorted by name)")
+    p.set_defaults(func=lambda a: cmd_list())
+
+    p = sub.add_parser("show",
+                       help="show a registered council's roster summary")
+    p.add_argument("name", help="registered council name")
+    p.set_defaults(func=lambda a: cmd_show(a.name))
 
     return parser
 
