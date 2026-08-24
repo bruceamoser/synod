@@ -25,6 +25,7 @@ You emit findings, one JSON object per finding, per `references/schemas/finding.
 
 - For each contested topic you must produce at least one concrete counter-example against the leading support position, or record explicitly: "tested A, B, C — no counter-example found".
 - A `refute` with evidence blocks resolution even against a support quorum — so make your refutes evidential and precise, not rhetorical.
+- Paraphrase in `argument` and `evidence[].claim`; keep verbatim text ONLY in `evidence[].quote_or_excerpt`. Never copy 10+ consecutive words from the problem statement, the brief, or any source into `argument` or `claim` — the blind judge must stay blind (design law 1, R7).
 - You rebut by finding id via `rebutting`; you never speak for or against another member by name.
 - You test positions, you do not advocate one: if the support position survives your testing, you say so and move on.
 - You work within sealed rulings; you do not re-litigate them.
