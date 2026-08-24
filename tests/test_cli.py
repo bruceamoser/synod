@@ -476,6 +476,55 @@ class CloseTest(unittest.TestCase):
         self.assertEqual(parse_json(out)["sealed"], ["r-001"])
         return run
 
+    def test_seal_stamps_sealed_at_overriding_judge_placeholder(self):
+        # Regression: the dogfood judge supplied a placeholder sealed_at it
+        # cannot know; the engine must stamp the seal time, not preserve the
+        # placeholder (design law 3: sealed_at is an engine fact).
+        with tempfile.TemporaryDirectory() as tmp:
+            charter = write_charter(tmp)
+            code, out, err = cli(["scaffold", str(charter)], tmp)
+            self.assertEqual(code, 0, err)
+            run = Path(parse_json(out)["run"])
+            brief = Path(tmp) / "brief.txt"
+            brief.write_text("Ship the beta by Friday or hold for next sprint?")
+            code, out, err = cli(
+                ["record-brief", str(run), "--file", str(brief)], tmp)
+            self.assertEqual(code, 0, err)
+            p1 = finding("researcher", "t-01", "support",
+                         argument="The plan is sound and ready to proceed now.",
+                         evidence=[{"source": "reasoning",
+                                     "claim": "the case supports it",
+                                     "quote_or_excerpt": "n/a"}])
+            p2 = finding("contrarian", "t-01", "refute",
+                         argument="The plan assumes a stable upstream we lack.",
+                         evidence=[{"source": "reasoning",
+                                     "claim": "the risk is real",
+                                     "quote_or_excerpt": "n/a"}])
+            for i, (f, role) in enumerate(((p1, "researcher"),
+                                           (p2, "contrarian"))):
+                fp = Path(tmp) / f"f{i}.json"
+                fp.write_text(json.dumps(f))
+                code, out, err = cli(
+                    ["finding", str(run), "--file", str(fp), "--role", role], tmp)
+                self.assertEqual(code, 0, err)
+            code, out, err = cli(["note-round", str(run), "--round", "1"], tmp)
+            self.assertEqual(code, 0, err)
+            code, out, err = cli(["judge-brief", str(run)], tmp)
+            self.assertEqual(code, 0, err)
+            placeholder = "2000-01-01T00:00:00Z"
+            rl = ruling("t-01")
+            rl["sealed_at"] = placeholder  # judge cannot know the seal time
+            ruling_file = Path(tmp) / "ruling.json"
+            ruling_file.write_text(json.dumps(rl))
+            code, out, err = cli(
+                ["seal-ruling", str(run), "--ruling-file", str(ruling_file)], tmp)
+            self.assertEqual(code, 0, err)
+            rulings = [e for e in engine.read_events(run) if e["type"] == "ruling"]
+            self.assertEqual(len(rulings), 1)
+            sealed = rulings[0]["payload"]["sealed_at"]
+            self.assertNotEqual(sealed, placeholder)
+            self.assertNotIn("2000-01-01", sealed)
+
     @staticmethod
     def _recommendation(rulings_applied):
         return {

@@ -117,7 +117,9 @@ def append_event(run, etype, payload, role, model=None):
         if etype == "ruling":
             if payload.get("binding") is not True:
                 die(1, "rulings are binding (design law 3); non-binding ruling refused")
-            payload["sealed_at"] = payload.get("sealed_at") or now_iso()
+            # The seal time is an engine fact, not judge knowledge: always stamp
+            # (a judge-supplied value is a placeholder it cannot know).
+            payload["sealed_at"] = now_iso()
         validate_payload(etype, payload)
         event = {
             "seq": seq,
