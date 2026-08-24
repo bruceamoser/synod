@@ -1,0 +1,1 @@
+The ops team has two engineers and no SRE; on-call is shared. Last quarter the team spent roughly 6 hours/week on routine service restarts. The team states a standing preference for long-lived services with good observability over large numbers of short-lived jobs, which they must watch for stuck or silently-failed runs.

@@ -1,0 +1,1 @@
+A single long-lived service on 1 vCPU / 2 GiB costs about $20/month. A per-batch job model adds roughly $35/month of scheduler overhead plus per-invocation charges. Measured single-service throughput is 3 files/minute, which comfortably covers 200 files/day with 50-file bursts.
