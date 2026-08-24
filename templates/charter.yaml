@@ -1,0 +1,41 @@
+# Synod council charter — annotated template.
+#
+# Copy this file, edit it, then:
+#   python3 scripts/council.py validate-charter <this-file>   # must pass
+#   python3 scripts/council.py register <this-file>           # optional bookkeeping
+#   python3 scripts/council.py scaffold <this-file>           # convene a run
+#
+# A council = its charter (roster + parameters). The core four roles are
+# required and non-removable (R1); user-defined roles are added under
+# members/ (R6).
+
+name: my-council            # lowercase alnum+hyphen slug; unique in the registry
+problem_domain: "What this council deliberates about, in one line."
+
+# Roster: the core four plus any custom roles. The core roles appear here
+# for configuration (model, votes); their presence is mandatory.
+members:
+  - role: librarian         # orchestrator duty: briefs, digests, synthesis
+    model: null             # null = config default (local); explicit override allowed
+    votes: true             # default: every member votes except the judge
+  - role: judge             # blind; invoked only on impasse; never votes
+    model: null             # null = config default (local); Q4 ruled local default
+  - role: contrarian        # must counter every contested finding each round
+    model: null
+  - role: researcher        # the only member with raw source access
+    model: null
+
+# Add a user-defined role (R6) by appending an entry like this:
+#
+#   - role: game-architect            # slug, unique within this charter
+#     duties: "damage-budget compliance, prereq shapes, cost math"
+#     model: null                     # null = config default; override is charter-explicit
+#     votes: true                     # false = advisory member (finds, but does not vote)
+#     card: references/roles/game-architect.md   # role card file, OR
+#     # card_inline: |
+#     #   You are the Game Architect...
+
+consensus:
+  # quorum: 2           # optional; default strict majority of voting members
+  max_rounds: 3         # debate rounds before impasse is declared
+  no_progress_limit: 2  # consecutive no-progress rounds before impasse is declared

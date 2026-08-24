@@ -19,6 +19,7 @@ from _engine import engine, finding, ruling, write_charter
 ALL_COMMANDS = [
     "scaffold", "record-brief", "add-source", "finding", "note-round",
     "brief", "verify", "check", "judge-brief", "seal-ruling", "close",
+    "validate-charter", "register", "deregister", "list", "show",
 ]
 
 
