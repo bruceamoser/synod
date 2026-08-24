@@ -843,35 +843,47 @@ def cmd_close(run, rec_file):
 
 # ---------------------------------------------------------------- registry
 
-REGISTRY_NAME = "registry.json"
+REGISTRY_NAME = "registry.yaml"
 COUNCIL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def registry_path():
-    """The registry file path under COUNCILS_ROOT."""
+    """The registry file path under COUNCILS_ROOT (registry.yaml)."""
     return COUNCILS_ROOT / REGISTRY_NAME
 
 
 def load_registry():
-    """The registry dict; an empty registry when the file does not exist.
+    """The registry's council map; an empty map when the file does not exist.
 
-    Exits 1 on a malformed or non-object registry file.
+    The file shape (ARCHITECTURE.md S6.1) is a single top-level ``councils:``
+    mapping of name -> {charter, description, status, registered_at}. Exits 1
+    on a malformed or non-object registry file.
     """
     p = registry_path()
     if not p.exists():
         return {}
+    data = None
     try:
-        reg = json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        die(1, f"registry is not valid JSON: {e}")
-    if not isinstance(reg, dict):
-        die(1, "registry must be a JSON object")
-    return reg
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        die(1, f"registry is not valid YAML: {e}")
+    if data is None:
+        return {}
+    if not isinstance(data, dict) or "councils" not in data:
+        die(1, "registry must be a mapping with a top-level 'councils' key")
+    councils = data["councils"]
+    if councils is None:
+        return {}
+    if not isinstance(councils, dict):
+        die(1, "registry 'councils' must be a mapping")
+    return councils
 
 
-def save_registry(reg):
-    """Write the registry atomically (indent 1, sorted keys)."""
-    atomic_write(registry_path(), json.dumps(reg, indent=1, sort_keys=True) + "\n")
+def save_registry(councils):
+    """Write the registry atomically under the ``councils:`` wrapper."""
+    text = yaml.safe_dump({"councils": councils}, sort_keys=True,
+                          default_flow_style=False, allow_unicode=True)
+    atomic_write(registry_path(), text)
 
 
 def require_name(name):
@@ -912,7 +924,9 @@ def cmd_register(path):
     """Validate a charter and record it in the registry under its slug.
 
     Exits 1 if the file is missing, the name is not a usable slug, or the
-    council is already registered. Prints {"registered", "registry"}.
+    council is already registered and active. A retired council may be
+    re-registered (its entry is replaced, status back to ``active``).
+    Prints {"registered", "registry"}.
     """
     p = Path(path).expanduser()
     if not p.is_file():
@@ -924,10 +938,12 @@ def cmd_register(path):
     charter = validate_charter(charter)
     name = require_name(charter["name"])
     reg = load_registry()
-    if name in reg:
+    if name in reg and reg[name].get("status") == "active":
         fail(f"council '{name}' is already registered; deregister first")
     reg[name] = {
         "charter": str(p.resolve()),
+        "description": charter.get("problem_domain") or "",
+        "status": "active",
         "registered_at": now_iso(),
     }
     save_registry(reg)
@@ -937,20 +953,32 @@ def cmd_register(path):
 
 
 def cmd_deregister(name):
-    """Remove a council from the registry. Exits 1 if the name is unknown."""
+    """Mark a council retired. Exits 1 if the name is unknown.
+
+    Per ARCHITECTURE.md S6.3 the registry is a discovery surface, not a
+    garbage collector: deregister marks ``status: retired`` and leaves the
+    entry (and any runs) for human retention decisions.
+    """
     slug = require_name(name)
     reg = load_registry()
     if slug not in reg:
         fail(f"council '{slug}' is not registered")
-    del reg[slug]
+    reg[slug]["status"] = "retired"
     save_registry(reg)
-    print(json.dumps({"deregistered": slug}, sort_keys=True))
+    print(json.dumps({"deregistered": slug, "status": "retired"},
+                     sort_keys=True))
 
 
 def cmd_list():
-    """List registered councils sorted by name (an empty list is fine)."""
+    """List registered councils sorted by name (an empty list is fine).
+
+    Retired councils are listed too, with their status, so the registry
+    stays a complete discovery surface.
+    """
     reg = load_registry()
     councils = [{"name": n, "charter": e.get("charter"),
+                 "description": e.get("description"),
+                 "status": e.get("status", "active"),
                  "registered_at": e.get("registered_at")}
                 for n, e in sorted(reg.items())]
     print(json.dumps({"councils": councils}, sort_keys=True))
@@ -962,6 +990,7 @@ def cmd_show(name):
 
     Exits 1 if the name is unknown, if the registered charter file no longer
     exists (the path is named), or if the charter no longer validates.
+    Retired councils are still shown, with their status.
     """
     slug = require_name(name)
     reg = load_registry()
@@ -979,6 +1008,8 @@ def cmd_show(name):
     print(json.dumps({
         "name": slug,
         "charter": str(charter_path),
+        "description": entry.get("description"),
+        "status": entry.get("status", "active"),
         "registered_at": entry.get("registered_at"),
         "members": [m["role"] for m in charter["members"]],
         "quorum": quorum_of(charter),

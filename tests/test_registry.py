@@ -52,6 +52,18 @@ def charter_dict(**overrides):
     return base
 
 
+def load_councils(tmp) -> dict:
+    """Parse the registry.yaml under tmp into its council map ({} if absent)."""
+    p = Path(tmp) / "registry.yaml"
+    if not p.exists():
+        return {}
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return {}
+    councils = data.get("councils")
+    return councils if isinstance(councils, dict) else {}
+
+
 class ValidateCharterUnitTest(unittest.TestCase):
     """engine.validate_charter(charter_dict) unit tests.
 
@@ -158,12 +170,19 @@ class RegistryRoundTripTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             info = self._register(tmp)
             self.assertEqual(info["registered"], "test-council")
-            self.assertTrue(info["registry"].endswith("registry.json"))
+            self.assertTrue(info["registry"].endswith("registry.yaml"))
 
-            # the registry file has the documented shape
-            reg = json.loads(Path(info["registry"]).read_text())
+            # the registry file has the documented shape (ARCHITECTURE S6.1):
+            # top-level councils: mapping, name -> {charter, description,
+            # status, registered_at}
+            reg = load_councils(tmp)
             entry = reg["test-council"]
-            self.assertEqual(set(entry), {"charter", "registered_at"})
+            self.assertEqual(set(entry),
+                             {"charter", "description", "status",
+                              "registered_at"})
+            self.assertEqual(entry["status"], "active")
+            # write_charter emits no problem_domain, so description is ""
+            self.assertEqual(entry["description"], "")
             self.assertTrue(Path(entry["charter"]).is_absolute())
             self.assertTrue(Path(entry["charter"]).is_file())
             self.assertRegex(entry["registered_at"], TS_RE)
@@ -174,6 +193,8 @@ class RegistryRoundTripTest(unittest.TestCase):
             self.assertEqual(out["councils"], [{
                 "name": "test-council",
                 "charter": entry["charter"],
+                "description": entry["description"],
+                "status": "active",
                 "registered_at": entry["registered_at"],
             }])
 
@@ -183,21 +204,31 @@ class RegistryRoundTripTest(unittest.TestCase):
             self.assertEqual(out, {
                 "name": "test-council",
                 "charter": entry["charter"],
+                "description": entry["description"],
+                "status": "active",
                 "registered_at": entry["registered_at"],
                 "members": CORE_MEMBER_ROLES,
                 "quorum": 2,
                 "core_roles_complete": True,
             })
 
-            # deregister removes the entry
+            # deregister MARKS the entry retired; it is not deleted
             code, out, err = cli(["deregister", "test-council"], tmp)
             self.assertEqual(code, 0, err)
-            self.assertEqual(out, {"deregistered": "test-council"})
+            self.assertEqual(out, {"deregistered": "test-council",
+                                   "status": "retired"})
+            reg = load_councils(tmp)
+            self.assertEqual(reg["test-council"]["status"], "retired")
+            # list still surfaces it, now retired
             code, out, err = cli(["list"], tmp)
             self.assertEqual(code, 0, err)
-            self.assertEqual(out, {"councils": []})
-            reg = json.loads(Path(info["registry"]).read_text())
-            self.assertNotIn("test-council", reg)
+            self.assertEqual(out["councils"][0]["name"], "test-council")
+            self.assertEqual(out["councils"][0]["status"], "retired")
+            # a retired council can be re-registered (status back to active)
+            info = self._register(tmp)
+            self.assertEqual(info["registered"], "test-council")
+            self.assertEqual(load_councils(tmp)["test-council"]["status"],
+                             "active")
 
     def test_double_register_refused_exit_1(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,9 +242,10 @@ class RegistryRoundTripTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("already registered", info["error"])
             self.assertIn("deregister first", info["error"])
-            reg = json.loads(Path(tmp, "registry.json").read_text())
+            reg = load_councils(tmp)
             self.assertEqual(reg["test-council"]["charter"],
                              str((Path(tmp) / "charter.yaml").resolve()))
+            self.assertEqual(reg["test-council"]["status"], "active")
 
     def test_register_missing_file_exits_1(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -221,7 +253,7 @@ class RegistryRoundTripTest(unittest.TestCase):
                 ["register", str(Path(tmp) / "nope.yaml")], tmp)
             self.assertEqual(code, 1)
             self.assertIn("not found", info["error"])
-            self.assertFalse((Path(tmp) / "registry.json").exists())
+            self.assertFalse((Path(tmp) / "registry.yaml").exists())
 
     def test_register_invalid_charter_exits_1_and_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -229,14 +261,14 @@ class RegistryRoundTripTest(unittest.TestCase):
             code, info, err = cli(["register", str(charter)], tmp)
             self.assertEqual(code, 1)
             self.assertIn("error", info)
-            self.assertFalse((Path(tmp) / "registry.json").exists())
+            self.assertFalse((Path(tmp) / "registry.yaml").exists())
 
     def test_deregister_unknown_name_exits_1(self):
         with tempfile.TemporaryDirectory() as tmp:
             code, info, err = cli(["deregister", "ghost-council"], tmp)
             self.assertEqual(code, 1)
             self.assertIn("not registered", info["error"])
-            self.assertFalse((Path(tmp) / "registry.json").exists())
+            self.assertFalse((Path(tmp) / "registry.yaml").exists())
 
     def test_show_unknown_name_exits_1(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -247,7 +279,7 @@ class RegistryRoundTripTest(unittest.TestCase):
     def test_show_with_deleted_charter_file_exits_1_and_names_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._register(tmp)
-            reg = json.loads(Path(tmp, "registry.json").read_text())
+            reg = load_councils(tmp)
             charter_path = Path(reg["test-council"]["charter"])
             charter_path.unlink()
             code, out, err = cli(["show", "test-council"], tmp)
