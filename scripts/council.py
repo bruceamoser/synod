@@ -774,12 +774,18 @@ def cmd_seal_ruling(run, ruling_file, model=None):
     If --model is not given, the charter's declared judge model is used (or
     null for the config default), so the ruling's provenance matches the
     finding behavior and the report's heterogeneity budget is accurate.
+    A --model contradicting the charter's declared judge model is refused
+    (provenance is an engine fact, not a member claim).
     """
     run = require_run_dir(run)
+    judge = next((m for m in charter_of(run)["members"]
+                  if m["role"] == "judge"), None)
+    declared = judge.get("model") if judge else None
+    if declared is not None and model is not None and model != declared:
+        die(1, f"provenance mismatch: the judge is chartered to model "
+            f"'{declared}' but the ruling records '{model}'")
     if model is None:
-        judge = next((m for m in charter_of(run)["members"]
-                      if m["role"] == "judge"), None)
-        model = judge.get("model") if judge else None
+        model = declared
     return seal_ruling(run, ruling_file, model=model)
 
 
@@ -850,10 +856,18 @@ def cmd_close(run, rec_file):
             hetero.setdefault(prov.get("model"), set()).add(
                 e["payload"]["role"])
     judge_model = None
+    ruling_present = False
     for e in events:
         if e["type"] == "ruling":
             judge_model = (e.get("provenance") or {}).get("model")
+            ruling_present = True
             break
+    if not ruling_present:
+        # No ruling (no impasse): report what the charter declared, so the
+        # budget reflects the chartered heterogeneity, not just what fired.
+        j = next((m for m in charter_of(run)["members"]
+                  if m["role"] == "judge"), None)
+        judge_model = j.get("model") if j else None
     report_lines = [
         f"# Council report — {council_name}",
         "",
@@ -867,7 +881,11 @@ def cmd_close(run, rec_file):
         "",
     ]
     if judge_model is not None:
-        report_lines.append(f"- judge: {judge_model}")
+        if ruling_present:
+            report_lines.append(f"- judge: {judge_model}")
+        else:
+            report_lines.append(
+                f"- judge: {judge_model} (chartered; not invoked - no impasse)")
     else:
         report_lines.append("- judge: config default (no charter override)")
     for model in sorted(hetero, key=lambda m: (m is None, m or "")):

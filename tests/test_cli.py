@@ -585,6 +585,92 @@ class CloseTest(unittest.TestCase):
                              if e["type"] == "ruling")
             self.assertEqual(ruling_ev["provenance"]["model"], "deepseek-judge")
 
+    def test_seal_judge_model_mismatch_exits_1(self):
+        # A --model contradicting the charter's declared judge model is
+        # refused (provenance is an engine fact, not a member claim).
+        with tempfile.TemporaryDirectory() as tmp:
+            charter2 = write_charter(
+                tmp,
+                members=[dict(m, model=("charter-judge" if m["role"] == "judge" else None))
+                         for m in CORE_CHARTER_MEMBERS])
+            code, out, err = cli(["scaffold", str(charter2)], tmp)
+            self.assertEqual(code, 0, err)
+            run2 = Path(parse_json(out)["run"])
+            brief = Path(tmp) / "b3.txt"
+            brief.write_text("Should we ship the beta by Friday or hold for next sprint?")
+            code, out, err = cli(["record-brief", str(run2), "--file", str(brief)], tmp)
+            self.assertEqual(code, 0, err)
+            f1 = Path(tmp) / "h1.json"
+            f1.write_text(json.dumps(finding("researcher", "t-01", "support",
+                                             argument="The plan is sound on balance and ready to proceed now.",
+                                             evidence=[{"source": "reasoning", "claim": "the case supports it",
+                                                        "quote_or_excerpt": "n/a"}])))
+            f2 = Path(tmp) / "h2.json"
+            f2.write_text(json.dumps(finding("contrarian", "t-01", "refute",
+                                             argument="The plan assumes a stable upstream that we do not control.",
+                                             evidence=[{"source": "reasoning", "claim": "the risk is real",
+                                                        "quote_or_excerpt": "n/a"}])))
+            for f, role in ((f1, "researcher"), (f2, "contrarian")):
+                code, out, err = cli(["finding", str(run2), "--file", str(f), "--role", role], tmp)
+                self.assertEqual(code, 0, err)
+            code, out, err = cli(["judge-brief", str(run2)], tmp)
+            self.assertEqual(code, 0, err)
+            rf = Path(tmp) / "r3.json"
+            rf.write_text(json.dumps(ruling("t-01")))
+            code, out, err = cli(["seal-ruling", str(run2), "--ruling-file", str(rf),
+                                  "--model", "something-else"], tmp)
+            self.assertEqual(code, 1)
+            self.assertIn("provenance mismatch", parse_json(out)["error"])
+            self.assertEqual(
+                [e for e in engine.read_events(run2) if e["type"] == "ruling"], [])
+
+    def test_report_judge_chartered_not_invoked(self):
+        # No impasse, no ruling: the report still shows the chartered judge
+        # model (marked not invoked) so the heterogeneity budget reflects the
+        # chartered design, not just what fired.
+        with tempfile.TemporaryDirectory() as tmp:
+            charter = write_charter(
+                tmp,
+                members=[dict(m, model=("deepseek-judge" if m["role"] == "judge" else None))
+                         for m in CORE_CHARTER_MEMBERS])
+            code, out, err = cli(["scaffold", str(charter)], tmp)
+            self.assertEqual(code, 0, err)
+            run = Path(parse_json(out)["run"])
+            brief = Path(tmp) / "b4.txt"
+            brief.write_text("Should we ship the beta by Friday or hold for next sprint?")
+            code, out, err = cli(["record-brief", str(run), "--file", str(brief)], tmp)
+            self.assertEqual(code, 0, err)
+            f1 = Path(tmp) / "i1.json"
+            f1.write_text(json.dumps(finding("researcher", "t-01", "support",
+                                             argument="The plan is sound on balance and ready to proceed now.",
+                                             evidence=[{"source": "reasoning", "claim": "the case supports it",
+                                                        "quote_or_excerpt": "n/a"}])))
+            f2 = Path(tmp) / "i2.json"
+            f2.write_text(json.dumps(finding("librarian", "t-01", "support",
+                                             argument="The record and the charter both point the same way here.",
+                                             evidence=[{"source": "reasoning", "claim": "the framing supports it",
+                                                        "quote_or_excerpt": "n/a"}])))
+            for f, role in ((f1, "researcher"), (f2, "librarian")):
+                code, out, err = cli(["finding", str(run), "--file", str(f),
+                                      "--role", role], tmp)
+                self.assertEqual(code, 0, err)
+            code, out, err = cli(["note-round", str(run), "--round", "1"], tmp)
+            self.assertEqual(code, 0, err)
+            code, out, err = cli(["check", str(run)], tmp)
+            self.assertEqual(parse_json(out)["action"], "recommend")
+            rec = Path(tmp) / "rec2.json"
+            rec.write_text(json.dumps({
+                "recommendation": "Adopt the supported position on t-01.",
+                "rationale": "t-01 resolved by support with no un-rebutted refutes.",
+                "resolved": [{"topic": "t-01", "outcome": "resolved in round 1"}],
+                "rulings_applied": [], "dissent": [], "confidence": 0.9}))
+            code, out, err = cli(["close", str(run), "--recommendation-file", str(rec)], tmp)
+            self.assertEqual(code, 0, err)
+            report = (run / "report.md").read_text(encoding="utf-8")
+            self.assertIn("- judge: deepseek-judge (chartered; not invoked - no impasse)",
+                          report)
+            self.assertIn("decorrelation: heterogeneous", report)
+
     def test_close_report_has_heterogeneity_budget(self):
         # Spec 2.2: report.md states which model produced the findings and
         # the judge, and flags single-model runs as untested decorrelation.
