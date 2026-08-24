@@ -426,16 +426,16 @@ def judge_brief(run):
     return brief
 
 
-def seal_ruling(run, ruling_file):
+def seal_ruling(run, ruling_file, model=None):
     """Schema-validate a judge ruling, append it sealed, record to judge/."""
     run = Path(run)
     payload = load_yaml(ruling_file) if str(ruling_file).endswith((".yaml", ".yml")) else json.load(open(ruling_file))
     if isinstance(payload, list):
         last = None
         for p in payload:
-            last = append_event(run, "ruling", p, role="judge")
+            last = append_event(run, "ruling", p, role="judge", model=model)
     else:
-        last = append_event(run, "ruling", payload, role="judge")
+        last = append_event(run, "ruling", payload, role="judge", model=model)
     rulings = [e["payload"] for e in read_events(run) if e["type"] == "ruling"]
     atomic_write(run / "judge" / "rulings.json", json.dumps(rulings, indent=1))
     print(json.dumps({"sealed": [r["id"] for r in rulings]}, sort_keys=True))
@@ -711,17 +711,25 @@ def cmd_brief(run, round_no, role):
 def cmd_finding(run, file_path, role, model):
     """Ingest one member finding file into the ledger.
 
-    Exits 4 on schema violation, 1 on role mismatch or a non-member role.
+    Exits 4 on schema violation, 1 on role mismatch, a non-member role, or a
+    --model that contradicts the charter's declared model for that role
+    (provenance is an engine fact, not a member claim).
     """
     run = require_run_dir(run)
     charter = charter_of(run)
     if role not in [m["role"] for m in charter["members"]]:
         die(1, f"role '{role}' is not a member of this charter")
+    member = next(m for m in charter["members"] if m["role"] == role)
+    declared = member.get("model")
+    if declared is not None and model is not None and model != declared:
+        die(1, f"provenance mismatch: role '{role}' is chartered to model "
+            f"'{declared}' but the finding records '{model}'")
     payload = read_json_object(file_path)
     if payload.get("role") != role:
         die(1, "role mismatch: finding file role "
             f"'{payload.get('role')}' does not match --role '{role}'")
-    event = append_event(run, "finding", payload, role=role, model=model)
+    event = append_event(run, "finding", payload, role=role,
+                         model=declared if model is None else model)
     print(json.dumps({"finding": event["payload"]["id"],
                       "round": event["payload"]["round"],
                       "topic": event["payload"]["topic"]}, sort_keys=True))
@@ -760,10 +768,19 @@ def cmd_judge_brief(run):
     return judge_brief(run)
 
 
-def cmd_seal_ruling(run, ruling_file):
-    """Validate and seal a judge ruling (or list of rulings)."""
+def cmd_seal_ruling(run, ruling_file, model=None):
+    """Validate and seal a judge ruling (or list of rulings).
+
+    If --model is not given, the charter's declared judge model is used (or
+    null for the config default), so the ruling's provenance matches the
+    finding behavior and the report's heterogeneity budget is accurate.
+    """
     run = require_run_dir(run)
-    return seal_ruling(run, ruling_file)
+    if model is None:
+        judge = next((m for m in charter_of(run)["members"]
+                      if m["role"] == "judge"), None)
+        model = judge.get("model") if judge else None
+    return seal_ruling(run, ruling_file, model=model)
 
 
 def cmd_close(run, rec_file):
@@ -824,6 +841,19 @@ def cmd_close(run, rec_file):
     atomic_write(run / "recommendation.md", "\n".join(rec_lines) + "\n")
 
     findings = find_findings(events)
+    # Heterogeneity budget (spec 2.2): which model actually produced each
+    # finding, read from the ledger's provenance. null = config default.
+    hetero = {}
+    for e in events:
+        if e["type"] == "finding":
+            prov = e.get("provenance") or {}
+            hetero.setdefault(prov.get("model"), set()).add(
+                e["payload"]["role"])
+    judge_model = None
+    for e in events:
+        if e["type"] == "ruling":
+            judge_model = (e.get("provenance") or {}).get("model")
+            break
     report_lines = [
         f"# Council report — {council_name}",
         "",
@@ -832,6 +862,26 @@ def cmd_close(run, rec_file):
         f"- Findings: {len(findings)}",
         f"- Rulings: {', '.join(sealed) if sealed else 'none'}",
         f"- Final verdict: {rec['recommendation']}",
+        "",
+        "## Heterogeneity budget",
+        "",
+    ]
+    if judge_model is not None:
+        report_lines.append(f"- judge: {judge_model}")
+    else:
+        report_lines.append("- judge: config default (no charter override)")
+    for model in sorted(hetero, key=lambda m: (m is None, m or "")):
+        label = model if model is not None else "config default"
+        roles = ", ".join(sorted(hetero[model]))
+        report_lines.append(f"- {label}: {roles}")
+    if len(hetero) > 1 or judge_model is not None:
+        report_lines.append(
+            "- decorrelation: heterogeneous (charter-explicit overrides active)")
+    else:
+        report_lines.append(
+            "- decorrelation: single model (all roles on the same model; "
+            "correlated-error risk untested in this run)")
+    report_lines += [
         "",
         "## Summary",
         "",
@@ -1104,7 +1154,10 @@ def build_parser():
     p.add_argument("run", help="run directory")
     p.add_argument("--ruling-file", required=True,
                    help="path to ruling JSON/YAML (object or array)")
-    p.set_defaults(func=lambda a: cmd_seal_ruling(a.run, a.ruling_file))
+    p.add_argument("--model",
+                   help="judge model id for provenance (default: charter's "
+                        "judge model, or null)")
+    p.set_defaults(func=lambda a: cmd_seal_ruling(a.run, a.ruling_file, a.model))
 
     p = sub.add_parser("close",
                        help="validate the recommendation and close the run")
