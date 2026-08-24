@@ -27,10 +27,24 @@ You are the orchestrator. This skill is the runbook; `docs/ARCHITECTURE.md` §4�
 
 For each round `N` (starting at 1), for each **voting member — NOT the judge** (the judge never receives a packet; the engine refuses):
 
-1. Render the packet: `python3 $SKILL/scripts/council.py brief <run> --round N --role R`. The packet (`briefs/round-NN/<role>.json`) carries `problem_brief`, a compressed `ledger_view` (`positions`, `open_refutes`, `sealed_rulings`), and the `task`.
+1. Render the packet: `python3 $SKILL/scripts/council.py brief <run> --round N --role R`. The packet (`briefs/round-NN/<role>.json`) carries `problem_brief`, a compressed `ledger_view` (`positions`, `open_refutes`, `sealed_rulings`), and the `task`. Render **every voter's** packet for the round - including later dispatch waves (the 3-concurrent cap means a 4+ voter council dispatches in waves; render each wave's packets before dispatching that wave). A member missing its packet will reconstruct the position map from the ledger instead, which works but is exactly the kind of process debt the dogfood exposed.
 2. Dispatch the role as an **isolated subagent** (Hermes `delegate_task`): context = the role card file (`references/roles/<role>.md` for core roles; the charter's `card` path for custom roles) + the brief JSON path. The subagent writes its finding JSON to a file and nothing else.
    - **Wall discipline (mandatory in every member prompt).** The judge brief is built from the ledger and is wall-linted against the problem statement and every source. So each member's prompt must state, verbatim: *"Paraphrase in `argument` and `evidence[].claim`; keep verbatim text ONLY in `evidence[].quote_or_excerpt`. Never copy 10+ consecutive words from the problem statement, the brief, or any source into `argument` or `claim` — the blind judge must stay blind."* A member that leaks a verbatim span forces a `judge-brief` refusal (exit 2) late in the run; because the ledger is append-only, the clean recovery is a whole-council re-run. Stating the rule up front is the cheap path; catching it at Stage 3 is the expensive one.
-3. Ingest it: `python3 $SKILL/scripts/council.py finding <run> --file <path> --role R [--model <model>]`. The engine validates the schema (exit 4 on violation) and assigns the finding id; `--model` records provenance (pass the model id if the charter overrides it).
+3. **Pre-ingest wall lint (mandatory before `finding`).** The ledger is
+   append-only and hash-chained: a finding that leaks a verbatim span into
+   `argument` or `evidence[].claim` cannot be edited out later, and the leak
+   is only *confirmed* at `judge-brief` - by which point the whole council
+   has already deliberated around it. So lint each member file **before**
+   ingesting: normalize `argument` and every `evidence[].claim` (lowercase,
+   alphanumeric runs), and check for any 10-word consecutive run shared with
+   the problem statement or any source under the run dir's `sources/`. On a
+   hit, re-dispatch that **one** member with the exact offending span named
+   and the instruction to paraphrase it; ingest the corrected file. The
+   dogfood recovered would-be whole-council re-runs as ~7-minute
+   single-member rewrites this way. `quote_or_excerpt` is exempt (stripped
+   before the judge sees it). The `judge-brief` wall remains the backstop;
+   this is the cheap front door.
+4. Ingest it: `python3 $SKILL/scripts/council.py finding <run> --file <path> --role R [--model <model>]`. The engine validates the schema (exit 4 on violation) and assigns the finding id; `--model` records provenance (pass the model id if the charter overrides it; the engine refuses a `--model` that contradicts the charter's declared model for the role).
 
 Batching: at most 3 subagents at a time (`delegation.max_concurrent_children=3`). Partition the members into batches of ≤3, run each batch in parallel (one `delegate_task` per role), and merge at batch end. 6 members = 2 batches. Note the batch count in the final report.
 
