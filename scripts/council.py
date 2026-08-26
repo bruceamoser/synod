@@ -242,6 +242,9 @@ def _check_result(run):
     events = read_events(run)
     findings = find_findings(events)
     quorum = quorum_of(charter)
+    # Reject threshold (P3): a reject-majority is a terminal state too.
+    # Default = quorum; a charter may raise it for a supermajority.
+    reject_quorum = charter.get("consensus", {}).get("reject_quorum", quorum)
     voters = voting_members(charter)
     max_rounds = charter.get("consensus", {}).get("max_rounds", 3)
     np_limit = charter.get("consensus", {}).get("no_progress_limit", 2)
@@ -266,14 +269,25 @@ def _check_result(run):
     contested = []
     for t in topics:
         support = sum(1 for role in voters if pos.get((role, t)) == "support")
+        refute = sum(1 for role in voters if pos.get((role, t)) == "refute")
         if t in ruled:
             state = "ruled"
         elif support >= quorum and t not in refute_by_topic:
+            # Approve: a support majority with no live (un-rebutted) refutes.
             state = "resolved"
+        elif refute >= reject_quorum:
+            # Reject: a reject-majority is terminal too. The council has
+            # converged that the status quo must change; close to a
+            # recommendation (reject + disposition plan) without a
+            # blind-judge detour. If both thresholds are met with live
+            # refutes outstanding, reject wins: a review council should not
+            # clear a topic while a live refute stands.
+            state = "rejected"
         else:
             state = "contested"
         topics_out[t] = {
             "state": state, "support": support, "quorum": quorum,
+            "refute": refute, "reject_quorum": reject_quorum,
             "un_rebutted_refutes": refute_by_topic.get(t, []),
         }
         if state == "contested":
@@ -539,6 +553,12 @@ def validate_charter(charter):
         if not isinstance(q, int) or isinstance(q, bool) or not (2 <= q <= voters):
             die(1, f"charter field 'consensus.quorum' must be an integer in "
                    f"[2, {voters}] (voting members)")
+    if "reject_quorum" in consensus:
+        rq = consensus["reject_quorum"]
+        voters = len(voting_members(charter))
+        if not isinstance(rq, int) or isinstance(rq, bool) or not (2 <= rq <= voters):
+            die(1, f"charter field 'consensus.reject_quorum' must be an integer "
+                   f"in [2, {voters}] (voting members)")
     max_rounds = consensus.get("max_rounds", 3)
     if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) \
             or max_rounds < 1:

@@ -123,12 +123,16 @@ After each round, the script groups findings by `topic` and computes per topic:
 
 | Signal | Rule |
 |---|---|
-| `resolved` | support votes ≥ **quorum** (default: strict majority of voting members) **AND** zero un-rebutted `refute` findings with evidence |
-| `contested` | ≥1 `refute` with evidence survives the round, or support < quorum |
+| `ruled` | a sealed ruling covers the topic — frozen, outranks the vote |
+| `resolved` | support votes ≥ **quorum** (default: strict majority of voting members) **AND** zero un-rebutted `refute` findings with evidence — the status quo is cleared |
+| `rejected` | refute votes ≥ **reject_quorum** (default: `quorum`, charter may raise it) — a **terminal** state, the mirror of `resolved`: the council has converged that the status quo must change. Closes to a *reject* recommendation (disposition plan), no blind-judge detour |
+| `contested` | neither threshold met — deliberation continues |
 | `no-progress` | a round adds no new findings and no stance changes vs the prior round |
 | **impasse** | any of: (a) `max_rounds` (default 3) reached with contested topics; (b) 2 consecutive `no-progress` rounds |
 
-Resolved topics freeze; later rounds only touch contested ones (context stays small — this is the late-round context-bloat mitigation). On impasse, **only the contested points** go to the judge. After a ruling, the RESOLUTION round must produce a recommendation that applies every ruling; the script verifies this (each sealed ruling id appears in `rulings_applied[]`).
+Terminal states are `ruled`, `resolved`, and `rejected`; only `contested` feeds the impasse/judge path. **Tie-break:** when a live (un-rebutted) refute stands and *both* the support quorum and the reject threshold are met, `rejected` wins — a review council does not clear a topic while a live refute is on the record. (This closed a real gap found while dogfooding the `hol-rulebook` council: a unanimous *refute* previously had no terminal state and was forced through the blind-judge mechanism built for genuine deadlock.)
+
+`resolved` and `rejected` topics freeze; later rounds only touch contested ones (context stays small — this is the late-round context-bloat mitigation). On impasse, **only the contested points** go to the judge. After a ruling, the RESOLUTION round must produce a recommendation that applies every ruling; the script verifies this (each sealed ruling id appears in `rulings_applied[]`). A `rejected` close carries the same `rulings_applied` discipline only when a ruling also fired; otherwise the recommendation states the reject and its disposition plan, with `dissent` capturing any support-side position.
 
 ### 4.2 Finding and event schemas (v1)
 
@@ -284,7 +288,8 @@ members:                                            # the roster: core + custom
     card: references/roles/layout-design.md
     votes: false           # advisory member: finds, but does not vote
 consensus:
-  quorum: majority         # strict majority of voting members
+  quorum: 3                # strict majority of voting members
+  reject_quorum: 3         # optional: a reject-majority closes a topic as `rejected`
   max_rounds: 3
   no_progress_limit: 2
 state: runs/               # under this council's dir
