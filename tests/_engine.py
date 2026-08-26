@@ -27,11 +27,14 @@ CORE_CHARTER_MEMBERS = [
 ]
 
 
-def charter_payload(max_rounds=3, no_progress_limit=2, quorum=None, members=None):
+def charter_payload(max_rounds=3, no_progress_limit=2, quorum=None,
+                    reject_quorum=None, members=None):
     """A locked-charter payload for the 'charter' ledger event."""
     consensus = {"max_rounds": max_rounds, "no_progress_limit": no_progress_limit}
     if quorum is not None:
         consensus["quorum"] = quorum
+    if reject_quorum is not None:
+        consensus["reject_quorum"] = reject_quorum
     return {
         "name": "test-council",
         "core": ["librarian", "judge", "contrarian", "researcher"],

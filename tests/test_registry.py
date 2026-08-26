@@ -132,6 +132,32 @@ class ValidateCharterUnitTest(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("quorum", err)
 
+    def test_valid_charter_with_reject_quorum_passes(self):
+        charter = charter_dict(
+            consensus={"quorum": 3, "reject_quorum": 3, "max_rounds": 2,
+                       "no_progress_limit": 2})
+        self.assertIs(engine.validate_charter(charter), charter)
+
+    def test_reject_quorum_out_of_range_exits_1_and_names_it(self):
+        for q in (1, 4):  # 3 voting members: reject_quorum must be in [2, 3]
+            with self.subTest(reject_quorum=q):
+                charter = charter_dict(
+                    consensus={"reject_quorum": q, "max_rounds": 3,
+                               "no_progress_limit": 2})
+                code, err = self._violation(charter)
+                self.assertEqual(code, 1)
+                self.assertIn("reject_quorum", err)
+
+    def test_reject_quorum_not_an_int_exits_1_and_names_it(self):
+        for q in ("majority", True):
+            with self.subTest(reject_quorum=q):
+                charter = charter_dict(
+                    consensus={"reject_quorum": q, "max_rounds": 3,
+                               "no_progress_limit": 2})
+                code, err = self._violation(charter)
+                self.assertEqual(code, 1)
+                self.assertIn("reject_quorum", err)
+
 
 class ValidateCharterCommandTest(unittest.TestCase):
     def test_valid_charter_prints_summary(self):
