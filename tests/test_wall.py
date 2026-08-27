@@ -14,7 +14,7 @@ TEN = "alpha beta gamma gamma2 delta epsilon zeta eta theta iota"
 NINE = TEN.split()[:9]
 
 WHITELISTED_KEYS = {
-    "id", "round", "role", "stance", "argument", "confidence",
+    "id", "round", "speaker", "stance", "argument", "confidence",
     "rebutting", "evidence",
 }
 WHITELISTED_EVIDENCE_KEYS = {"source", "claim"}
@@ -168,6 +168,62 @@ class BriefWhitelistTest(unittest.TestCase):
             self.assertNotIn("provenance", json.dumps(brief))
             # the raw problem statement must not be in the brief either
             self.assertNotIn("Default problem statement", json.dumps(brief))
+
+    def test_brief_is_anonymized_role_names_absent(self):
+        # issue/19 (anonymized review): the judge weighs arguments, not
+        # speakers — no role name may survive anywhere in the brief, and
+        # the inverse map lives OUTSIDE the judge's input.
+        with tempfile.TemporaryDirectory() as tmp:
+            run = make_run(tmp, with_problem=False)
+            engine.append_event(
+                run, "finding",
+                finding("researcher", "t-01", "support"), role="researcher",
+            )
+            engine.append_event(
+                run, "finding",
+                finding("contrarian", "t-01", "refute"), role="contrarian",
+            )
+            brief = engine.judge_brief(run)
+            blob = json.dumps(brief)
+            # member role names must not survive (the instruction text says
+            # "blind judge", so only member roles are asserted on)
+            for role in ("researcher", "contrarian", "librarian"):
+                self.assertNotIn(role, blob)
+            # first-appearance order: researcher spoke first -> Speaker A
+            topic = brief["contested_topics"]["t-01"]
+            self.assertEqual(set(f["speaker"] for f in topic["findings"]),
+                             {"Speaker A", "Speaker B"})
+            r = [f for f in topic["findings"] if f["stance"] == "support"][0]
+            c = [f for f in topic["findings"] if f["stance"] == "refute"][0]
+            self.assertEqual(r["speaker"], "Speaker A")
+            self.assertEqual(c["speaker"], "Speaker B")
+            self.assertEqual(topic["positions"],
+                             {"Speaker A": "support", "Speaker B": "refute"})
+            # the council-side inverse map exists and is complete
+            smap = json.loads((run / "judge" / "speaker_map.json").read_text())
+            self.assertEqual(smap, {"Speaker A": "researcher",
+                                    "Speaker B": "contrarian"})
+            # determinism: a second identical run yields the same labels
+            with tempfile.TemporaryDirectory() as tmp2:
+                run2 = make_run(tmp2, with_problem=False)
+                engine.append_event(
+                    run2, "finding",
+                    finding("researcher", "t-01", "support"),
+                    role="researcher",
+                )
+                engine.append_event(
+                    run2, "finding",
+                    finding("contrarian", "t-01", "refute"),
+                    role="contrarian",
+                )
+                brief2 = engine.judge_brief(run2)
+                smap2 = json.loads(
+                    (run2 / "judge" / "speaker_map.json").read_text())
+                self.assertEqual(smap, smap2)
+                self.assertEqual(
+                    {f["speaker"]: f["stance"]
+                     for f in brief2["contested_topics"]["t-01"]["findings"]},
+                    {"Speaker A": "support", "Speaker B": "refute"})
 
 
 if __name__ == "__main__":

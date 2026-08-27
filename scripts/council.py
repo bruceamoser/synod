@@ -372,13 +372,39 @@ def wall_lint(brief_text, corpus):
     return hits
 
 
+def speaker_map(events, contested):
+    """Deterministic role -> speaker-label map for the judge brief.
+
+    Anonymized review (issue/19): the judge must not be able to weigh an
+    argument by who made it. Roles are labeled "Speaker A", "Speaker B", ...
+    in order of FIRST finding appearance on the contested topics (by ledger
+    seq, ties broken by role name) — data-derived, deterministic, and
+    semantically neutral (no role sorts before another by name). Only roles
+    that actually speak on the contested topics get a label. The inverse map
+    is written to judge/speaker_map.json for the council's traceability; it
+    never enters the judge's input.
+    """
+    order = {}
+    for e in events:
+        if e["type"] != "finding":
+            continue
+        p = e["payload"]
+        if p["topic"] in contested and p["role"] not in order:
+            order[p["role"]] = e["seq"]
+    ranked = sorted(order.items(), key=lambda kv: (kv[1], kv[0]))
+    return {role: "Speaker %s" % chr(65 + i) for i, (role, _) in enumerate(ranked)}
+
+
 def judge_brief(run):
     """Assemble the judge's brief from ledger fields ONLY (law 1).
 
-    Whitelist: role, stance, argument, confidence, rebutting, evidence
-    {source, claim}. Excluded: evidence.quote_or_excerpt (verbatim source
-    text), provenance, digests. Then the n-gram lint runs against the full
-    forbidden corpus; any shared NGRAM_N-word span refuses the brief (exit 2).
+    Whitelist: speaker (anonymized role), stance, argument, confidence,
+    rebutting, evidence {source, claim}. Excluded: role names and provenance
+    (issue/19 — anonymized review: the judge weighs arguments, not speakers),
+    evidence.quote_or_excerpt (verbatim source text), digests. Then the
+    n-gram lint runs against the full forbidden corpus; any shared NGRAM_N-
+    word span refuses the brief (exit 2). The speaker map is persisted to
+    judge/speaker_map.json (council-side traceability, never judge input).
     """
     run = Path(run)
     chk = _check_result(run)
@@ -389,6 +415,7 @@ def judge_brief(run):
     findings = [f for f in find_findings(events)
                 if f["payload"]["topic"] in contested]
     pos = topic_positions(events)
+    speakers = speaker_map(events, contested)
     brief = {
         "assembled_at": now_iso(),
         "wall": {"ngram_n": NGRAM_N, "reject_at": NGRAM_REJECT_AT},
@@ -397,18 +424,23 @@ def judge_brief(run):
         "instruction": ("You are a blind judge. You see ONLY the arguments as "
                         "presented below. You have no access to, and no "
                         "knowledge of, the underlying problem statement or "
-                        "sources. Rule on each contested topic. Output one "
-                        "ruling JSON object per topic, exactly matching the "
-                        "council ruling schema."),
+                        "sources. Speakers are anonymized: you see 'Speaker A', "
+                        "'Speaker B', etc. Their roles, identities, and models "
+                        "are unknown and must not be inferred; weigh each "
+                        "argument on its merits alone. Rule on each contested "
+                        "topic. Output one ruling JSON object per topic, "
+                        "exactly matching the council ruling schema."),
     }
     for t in contested:
         tf = [f["payload"] for f in findings if f["payload"]["topic"] == t]
         brief["contested_topics"][t] = {
-            "positions": {role: stance for (role, topic), stance in pos.items()
-                          if topic == t},
+            "positions": {speakers[role]: stance
+                          for (role, topic), stance in pos.items()
+                          if topic == t and role in speakers},
             "findings": [
                 {
-                    "id": f["id"], "round": f["round"], "role": f["role"],
+                    "id": f["id"], "round": f["round"],
+                    "speaker": speakers[f["role"]],
                     "stance": f["stance"], "argument": f["argument"],
                     "confidence": f["confidence"],
                     "rebutting": f.get("rebutting") or [],
@@ -434,6 +466,9 @@ def judge_brief(run):
         die(2, f"blind wall REJECTED: shared spans with "
                + "; ".join(f"{k} ({len(v)})" for k, v in hits.items()))
     atomic_write(jdir / "brief.json", json.dumps(brief, indent=1))
+    # council-side traceability only — never part of the judge's input
+    atomic_write(jdir / "speaker_map.json",
+                 json.dumps({v: k for k, v in speakers.items()}, indent=1, sort_keys=True))
     print(json.dumps({"brief": str(jdir / "brief.json"), "topics": contested,
                       "wall": "clean", "corpus_docs": len(wall_corpus(run))},
                      sort_keys=True))
