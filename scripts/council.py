@@ -115,8 +115,15 @@ def append_event(run, etype, payload, role, model=None):
             payload = dict(payload)
             payload["id"] = f"{prefix}-{max(nums or [0]) + 1:03d}"
         if etype == "ruling":
-            if payload.get("binding") is not True:
+            # `binding` is a design law (law 3: rulings are binding), not a judge
+            # fact. A judge writing a ruling file has no way to know it must
+            # assert the law, so an ABSENT key is stamped true exactly as
+            # `sealed_at` is below. An EXPLICIT false is still refused: the
+            # guard exists to stop a caller filing a non-binding ruling, and
+            # that purpose survives.
+            if payload.get("binding") is False:
                 die(1, "rulings are binding (design law 3); non-binding ruling refused")
+            payload["binding"] = True
             # The seal time is an engine fact, not judge knowledge: always stamp
             # (a judge-supplied value is a placeholder it cannot know).
             payload["sealed_at"] = now_iso()
